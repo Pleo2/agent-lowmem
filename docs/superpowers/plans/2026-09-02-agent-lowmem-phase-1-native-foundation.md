@@ -12,7 +12,7 @@
 
 ## Global Constraints
 
-- Start from commit `edcc3d7` on a clean isolated branch named `codex/agent-lowmem-phase-1`; use `superpowers:using-git-worktrees` when execution begins.
+- Start from commit `edcc3d7` on a clean isolated branch named `feat/agent-lowmem-phase-1`; use `superpowers:using-git-worktrees` when execution begins.
 - Rust 1.85.0 is the minimum and pinned implementation toolchain; every first-party production target uses edition 2024 and `#![forbid(unsafe_code)]`.
 - Run only one install, compile, formatter, linter, test, or measurement command at a time. Every Cargo command that can compile uses `-j 1`; tests also use `--test-threads=1`.
 - Production `doctor` starts no child process, executes no Git/Node/npm/pnpm/package binary, makes no network request, writes no repository file, and reads no user/global package-manager configuration.
@@ -65,7 +65,7 @@ Only Phase 1 is active. Create each later plan after the preceding phase passes 
 - Consumes: clean repository at `edcc3d7` and Homebrew 6.x.
 - Produces: buildable `agent-lowmem` library/binary package using Rust 1.85.0 with first-party unsafe code forbidden.
 
-- [ ] **Step 1: Install only rustup and the pinned minimal toolchain**
+- [x] **Step 1: Install only rustup and the pinned minimal toolchain**
 
 Run sequentially:
 
@@ -79,7 +79,7 @@ cargo +1.85.0 --version
 
 Expected: `rustc 1.85.0` and `cargo 1.85.0`. Do not install another Rust formula or nightly toolchain.
 
-- [ ] **Step 2: Create the pinned workspace files**
+- [x] **Step 2: Create the pinned workspace files**
 
 `Cargo.toml`:
 
@@ -144,7 +144,7 @@ fn main() {}
 
 Append `/target/` to `.gitignore`; do not ignore `Cargo.lock`.
 
-- [ ] **Step 3: Record the direct dependency boundary**
+- [x] **Step 3: Record the direct dependency boundary**
 
 Create `docs/dependencies-v1.md` with this table and policy:
 
@@ -161,7 +161,7 @@ Create `docs/dependencies-v1.md` with this table and policy:
 `Cargo.lock` is the authority for exact resolved versions. Every direct dependency addition requires purpose, source/API review, license review, one-worker tests, and a separate commit. Production dependencies may not add a network client, async runtime, daemon, shell evaluator, or lifecycle installer.
 ```
 
-- [ ] **Step 4: Generate the lockfile and verify the baseline**
+- [x] **Step 4: Generate the lockfile and verify the baseline**
 
 Run:
 
@@ -172,7 +172,7 @@ cargo fmt --all -- --check
 
 Expected: both commands exit 0 and create one committed `Cargo.lock`.
 
-- [ ] **Step 5: Commit the workspace**
+- [x] **Step 5: Commit the workspace**
 
 ```bash
 git add .gitignore Cargo.toml Cargo.lock rust-toolchain.toml crates/agent-lowmem docs/dependencies-v1.md
@@ -191,7 +191,7 @@ git commit -m "build: initialize Agent Lowmem Rust workspace"
 - Consumes: Rev 6 §11.
 - Produces: `Origin`, `Reason`, `ExitResult::is_valid()`, `Reason::ALL`, and the exact JSON enum consumed by every later phase.
 
-- [ ] **Step 1: Write failing unit tests for serialization and origin/code compatibility**
+- [x] **Step 1: Write failing unit tests for serialization and origin/code compatibility**
 
 ```rust
 #[test]
@@ -209,13 +209,13 @@ fn rejects_invalid_origin_code_reason_combinations() {
 }
 ```
 
-- [ ] **Step 2: Run the focused test and verify RED**
+- [x] **Step 2: Run the focused test and verify RED**
 
 Run: `cargo test -p agent-lowmem result::tests -j 1 -- --test-threads=1`
 
 Expected: compilation fails because the result types do not exist.
 
-- [ ] **Step 3: Implement the exact enums and compatibility matcher**
+- [x] **Step 3: Implement the exact enums and compatibility matcher**
 
 Define both enums as `#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]` with `#[serde(rename_all = "kebab-case")]`. Define `ExitResult { origin: Origin, code: i32, reason: Reason }`, a `const fn new(origin, code, reason)`, and `Reason::ALL: [Reason; 31]`. `Reason` contains exactly these 31 variants, in this order:
 
@@ -255,11 +255,11 @@ InternalError,
 
 `Origin` contains `Preflight`, `Child`, `SupervisorTimeout`, `ExternalSignal`, and `Internal`. Add `pub mod result;` to `lib.rs`. Implement `ExitResult::is_valid()` by matching exhaustively on every `Reason` variant and checking that variant's permitted origin/code combination; do not use a wildcard reason arm.
 
-- [ ] **Step 4: Create and test the schema enum**
+- [x] **Step 4: Create and test the schema enum**
 
 Create `schemas/result-v1.schema.json` as Draft 2020-12 with required `schemaVersion`, `timestamp`, `origin`, `code`, `reason`, `message`, `nextAction`, and `childStarted` properties. Set `additionalProperties: false`; allow future phase-specific stable records only beneath an optional `details` object. Define the five exact origin strings and the 31 exact reason strings above, then express the Rev 6 origin/code/reason combinations through `oneOf`. Add a unit test that parses the schema with `serde_json`, extracts `/properties/reason/enum`, and asserts equality with `Reason::ALL` serialized in order.
 
-- [ ] **Step 5: Run tests and commit**
+- [x] **Step 5: Run tests and commit**
 
 ```bash
 cargo test -p agent-lowmem result::tests -j 1 -- --test-threads=1
@@ -280,7 +280,7 @@ Expected: all focused tests pass and the schema contains no reason absent from R
 - Consumes: safe `sysctl` API and Rev 6 §8.3 reference constants.
 - Produces: `HostSource::read(key)`, `NativeHostSource`, `inspect_host(source) -> HostReport`, and `ProfileField` mismatch values.
 
-- [ ] **Step 1: Write failing deterministic profile tests**
+- [x] **Step 1: Write failing deterministic profile tests**
 
 ```rust
 #[test]
@@ -312,13 +312,13 @@ fn rejects_a_missing_mandatory_native_read() {
 }
 ```
 
-- [ ] **Step 2: Run the focused test and verify RED**
+- [x] **Step 2: Run the focused test and verify RED**
 
 Run: `cargo test -p agent-lowmem host::tests -j 1 -- --test-threads=1`
 
 Expected: compilation fails because `HostSource` and `HostReport` do not exist.
 
-- [ ] **Step 3: Implement host evidence and exact classification**
+- [x] **Step 3: Implement host evidence and exact classification**
 
 Define:
 
@@ -351,7 +351,7 @@ Read only `kern.osproductversion`, `hw.model`, `machdep.cpu.brand_string`, `hw.m
 
 Add `pub mod host;` to `lib.rs`.
 
-- [ ] **Step 4: Implement the native safe source and live smoke test**
+- [x] **Step 4: Implement the native safe source and live smoke test**
 
 `NativeHostSource::read` uses only:
 
@@ -369,7 +369,7 @@ control
 
 Add a macOS-only test that asserts the current host report contains `Mac14,15`, `Apple M2`, `8_589_934_592`, and `16_384`. It may assert `performance_validated` only when the observed macOS major is 26.
 
-- [ ] **Step 5: Verify forbidden behavior and commit**
+- [x] **Step 5: Verify forbidden behavior and commit**
 
 ```bash
 cargo test -p agent-lowmem host::tests -j 1 -- --test-threads=1
@@ -391,7 +391,7 @@ Expected: tests pass; `rg` returns no match.
 - Consumes: a starting directory and filesystem data only.
 - Produces: `find_git_root(start) -> Result<Option<GitRoot>, RepositoryError>` and `inspect_repository(start) -> RepositoryReport` without serializing the root path.
 
-- [ ] **Step 1: Write failing fixture tests**
+- [x] **Step 1: Write failing fixture tests**
 
 Create fixtures inside a unique test temporary directory using Rust filesystem APIs. Cover:
 
@@ -421,13 +421,13 @@ fn rejects_a_declared_manager_with_the_wrong_lockfile() {
 
 Also cover no Git root, parent walking, a `.git` directory, a valid worktree `.git` pointer file, malformed JSON, missing root package, missing version, and ambiguous npm/pnpm lockfiles.
 
-- [ ] **Step 2: Run the focused tests and verify RED**
+- [x] **Step 2: Run the focused tests and verify RED**
 
 Run: `cargo test -p agent-lowmem repository::tests -j 1 -- --test-threads=1`
 
 Expected: compilation fails because repository inspection types do not exist.
 
-- [ ] **Step 3: Implement the minimum data-only inspector**
+- [x] **Step 3: Implement the minimum data-only inspector**
 
 The public serialized report is:
 
@@ -447,7 +447,7 @@ Keep the canonical root path in a private `GitRoot(PathBuf)` that has no `Serial
 
 Add `pub mod repository;` to `lib.rs`.
 
-- [ ] **Step 4: Run tests, inspect the production imports, and commit**
+- [x] **Step 4: Run tests, inspect the production imports, and commit**
 
 ```bash
 cargo test -p agent-lowmem repository::tests -j 1 -- --test-threads=1
@@ -473,7 +473,7 @@ Expected: tests pass; `rg` returns no match.
 - Consumes: `inspect_host`, `inspect_repository`, and result vocabulary.
 - Produces: `CliCommand::Doctor { json }`, `DoctorReport`, human output on stdout, JSON output on stdout, diagnostics on stderr, and deterministic wrapper exit codes.
 
-- [ ] **Step 1: Write failing parser tests**
+- [x] **Step 1: Write failing parser tests**
 
 ```rust
 #[test]
@@ -487,13 +487,13 @@ fn parses_only_the_phase_one_doctor_forms() {
 
 The parser operates on `OsString`, rejects non-UTF-8 command tokens, accepts no abbreviated flags, and does not import a shell or CLI framework.
 
-- [ ] **Step 2: Run parser tests and verify RED**
+- [x] **Step 2: Run parser tests and verify RED**
 
 Run: `cargo test -p agent-lowmem cli::tests -j 1 -- --test-threads=1`
 
 Expected: compilation fails because `CliCommand` does not exist.
 
-- [ ] **Step 3: Implement doctor report assembly**
+- [x] **Step 3: Implement doctor report assembly**
 
 Define:
 
@@ -511,11 +511,11 @@ pub struct DoctorReport {
 
 For this private checkpoint, set `schema_version` to `1`, `phase` to `native-foundation`, and `next_action` to `implement repository policy before enabling managed runs`. Do not serialize a timestamp or claim that `run` is implemented. Human output states the same limitation explicitly.
 
-- [ ] **Step 4: Wire the binary entry point**
+- [x] **Step 4: Wire the binary entry point**
 
 Add `pub mod cli;` and `pub mod doctor;` to `lib.rs`. `main.rs` creates `NativeHostSource`, obtains `current_dir`, invokes doctor, and prints exactly one representation to stdout. A completed inspection returns 0 even outside a repository or on an unsupported host because `doctor` reports capability rather than launching work. Invalid CLI returns 2, the intentionally unavailable `run` path returns 64, and an inspection failure that prevents any report returns 70. Panic handling and runner cleanup remain Phase 3 because this phase owns no child or lock.
 
-- [ ] **Step 5: Write executable-level tests**
+- [x] **Step 5: Write executable-level tests**
 
 Use `env!("CARGO_BIN_EXE_agent-lowmem")` and an isolated working directory to assert:
 
@@ -525,7 +525,7 @@ Use `env!("CARGO_BIN_EXE_agent-lowmem")` and an isolated working directory to as
 - invalid arguments exit 2;
 - `run test` exits 64, starts no repository child, and writes `agent-lowmem: result origin=preflight code=64 reason=operation-unsupported` to stderr.
 
-- [ ] **Step 6: Run focused tests and commit**
+- [x] **Step 6: Run focused tests and commit**
 
 ```bash
 cargo test -p agent-lowmem cli::tests -j 1 -- --test-threads=1
@@ -546,13 +546,13 @@ git commit -m "feat: add native Agent Lowmem doctor checkpoint"
 - Consumes: release binary from Task 5.
 - Produces: executable sentinel proof, 20-run timing gate, binary-size/RSS evidence, and the Phase 1 completion decision.
 
-- [ ] **Step 1: Add a failing child-process sentinel test**
+- [x] **Step 1: Add a failing child-process sentinel test**
 
 The test creates executable sentinels named `git`, `node`, `npm`, and `pnpm` in an isolated directory. Each sentinel writes its name to a marker before exiting 97. Run the absolute Agent Lowmem binary with `PATH` containing only the sentinel directory plus `/usr/bin:/bin`, then assert doctor exits normally and the marker does not exist.
 
 Also scan `crates/agent-lowmem/src` in the test and fail if any production file contains `std::process::Command`, `Command::new`, `memorystatus_vm_pressure`, or `unsafe {`.
 
-- [ ] **Step 2: Run the sentinel test before completing the guard**
+- [x] **Step 2: Run the sentinel test before completing the guard**
 
 First invoke one sentinel directly from the test with its isolated `PATH` and assert that it writes the marker; delete the marker, then invoke Agent Lowmem `doctor` with the same `PATH` and assert the marker remains absent. Run:
 
@@ -562,7 +562,7 @@ cargo test -p agent-lowmem --test doctor_cli zero_child -j 1 -- --test-threads=1
 
 Expected: the fixture self-check proves the sentinel can detect a subprocess, while the doctor invocation passes with no marker. Production code never contains an intentional subprocess implementation.
 
-- [ ] **Step 3: Add the ignored warm-cache release timing test**
+- [x] **Step 3: Add the ignored warm-cache release timing test**
 
 `doctor_budget.rs` launches the release binary 20 times from a committed-equivalent empty temporary directory, records `Instant` elapsed milliseconds, sorts them, and calculates median index 9 and p95 index 18. Assert median at most 100 ms. Repository-fixture timing remains Phase 2 because this phase does not yet classify scripts and tools.
 
@@ -572,7 +572,7 @@ Run:
 cargo test --release -p agent-lowmem --test doctor_budget -j 1 -- --ignored --test-threads=1
 ```
 
-- [ ] **Step 4: Run the complete sequential Phase 1 gate**
+- [x] **Step 4: Run the complete sequential Phase 1 gate**
 
 ```bash
 cargo fmt --all -- --check
@@ -593,7 +593,7 @@ Expected:
 - `/usr/bin/time -l` reports peak resident memory at or below 24 MiB;
 - no raw trace, Swift build product, `target/`, absolute path, or environment value is tracked.
 
-- [ ] **Step 5: Record exact measurements and commit**
+- [x] **Step 5: Record exact measurements and commit**
 
 Append one dated Phase 1 table to `docs/dependencies-v1.md` containing the host key, Rust version, commit under test, release binary bytes, peak resident bytes, median doctor milliseconds, p95 doctor milliseconds, and commands above. These are development measurements, not a release claim.
 

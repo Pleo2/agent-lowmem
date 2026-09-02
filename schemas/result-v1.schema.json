@@ -1,0 +1,197 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Agent Lowmem result v1",
+  "type": "object",
+  "required": [
+    "schemaVersion",
+    "timestamp",
+    "origin",
+    "code",
+    "reason",
+    "message",
+    "nextAction",
+    "childStarted"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "origin": {
+      "type": "string",
+      "enum": [
+        "preflight",
+        "child",
+        "supervisor-timeout",
+        "external-signal",
+        "internal"
+      ]
+    },
+    "code": {
+      "type": "integer"
+    },
+    "reason": {
+      "type": "string",
+      "enum": [
+        "completed",
+        "invalid-cli",
+        "invalid-config",
+        "host-unsupported",
+        "repository-unsupported",
+        "package-manager-unsupported",
+        "workspace-unsupported",
+        "workspace-cardinality",
+        "operation-unsupported",
+        "script-syntax-unsupported",
+        "script-shell-unsupported",
+        "script-reference-unsupported",
+        "script-graph-too-large",
+        "wrapper-unsupported",
+        "tool-unsupported",
+        "tool-version-unsupported",
+        "watch-denied",
+        "ui-denied",
+        "background-denied",
+        "parallel-denied",
+        "argument-denied",
+        "nonfinal-injection-required",
+        "lock-held",
+        "nested-invocation",
+        "evidence-changed",
+        "managed-file-conflict",
+        "child-exit",
+        "child-signal",
+        "deadline-exceeded",
+        "external-signal",
+        "internal-error"
+      ]
+    },
+    "message": {
+      "type": "string"
+    },
+    "nextAction": {
+      "type": "string"
+    },
+    "childStarted": {
+      "type": "boolean"
+    },
+    "details": {
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "oneOf": [
+    {
+      "properties": {
+        "origin": { "const": "child" },
+        "code": { "const": 0 },
+        "reason": { "const": "completed" },
+        "childStarted": { "const": true }
+      }
+    },
+    {
+      "properties": {
+        "origin": { "const": "preflight" },
+        "code": { "const": 2 },
+        "reason": { "enum": ["invalid-cli", "invalid-config"] },
+        "childStarted": { "const": false }
+      }
+    },
+    {
+      "properties": {
+        "origin": { "const": "preflight" },
+        "code": { "const": 64 },
+        "reason": {
+          "enum": [
+            "host-unsupported",
+            "repository-unsupported",
+            "package-manager-unsupported",
+            "workspace-unsupported",
+            "workspace-cardinality",
+            "operation-unsupported",
+            "script-syntax-unsupported",
+            "script-shell-unsupported",
+            "script-reference-unsupported",
+            "script-graph-too-large",
+            "wrapper-unsupported",
+            "tool-unsupported",
+            "tool-version-unsupported",
+            "watch-denied",
+            "ui-denied",
+            "background-denied",
+            "parallel-denied",
+            "argument-denied",
+            "nonfinal-injection-required"
+          ]
+        },
+        "childStarted": { "const": false }
+      }
+    },
+    {
+      "properties": {
+        "origin": { "const": "preflight" },
+        "code": { "const": 73 },
+        "reason": { "enum": ["lock-held", "nested-invocation"] },
+        "childStarted": { "const": false }
+      }
+    },
+    {
+      "properties": {
+        "origin": { "const": "preflight" },
+        "code": { "const": 75 },
+        "reason": { "const": "evidence-changed" },
+        "childStarted": { "const": false }
+      }
+    },
+    {
+      "properties": {
+        "origin": { "const": "preflight" },
+        "code": { "const": 78 },
+        "reason": { "const": "managed-file-conflict" },
+        "childStarted": { "const": false }
+      }
+    },
+    {
+      "properties": {
+        "origin": { "const": "child" },
+        "code": { "type": "integer", "minimum": 1, "maximum": 255 },
+        "reason": { "const": "child-exit" },
+        "childStarted": { "const": true }
+      }
+    },
+    {
+      "properties": {
+        "origin": { "const": "child" },
+        "code": { "type": "integer", "minimum": 129, "maximum": 255 },
+        "reason": { "const": "child-signal" },
+        "childStarted": { "const": true }
+      }
+    },
+    {
+      "properties": {
+        "origin": { "const": "supervisor-timeout" },
+        "code": { "const": 124 },
+        "reason": { "const": "deadline-exceeded" },
+        "childStarted": { "const": true }
+      }
+    },
+    {
+      "properties": {
+        "origin": { "const": "external-signal" },
+        "code": { "type": "integer", "minimum": 129, "maximum": 255 },
+        "reason": { "const": "external-signal" },
+        "childStarted": { "const": true }
+      }
+    },
+    {
+      "properties": {
+        "origin": { "const": "internal" },
+        "code": { "const": 70 },
+        "reason": { "const": "internal-error" }
+      }
+    }
+  ]
+}

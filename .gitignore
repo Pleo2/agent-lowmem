@@ -1,2 +1,3 @@
 /artifacts/pressure-probe/raw/*.jsonl
 /.worktrees/
+/target/
