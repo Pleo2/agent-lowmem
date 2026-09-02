@@ -66,12 +66,18 @@ fn agent_lowmem(current_dir: &Path, arguments: &[&str]) -> Output {
 #[test]
 fn doctor_json_exits_zero_and_redacts_paths_and_environment_values() {
     let fixture = Fixture::empty();
-    let secret = "agent-lowmem-secret-must-not-leak";
+    let secret = format!(
+        "agent-lowmem-secret-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    );
 
     let output = Command::new(env!("CARGO_BIN_EXE_agent-lowmem"))
         .args(["doctor", "--json"])
         .current_dir(fixture.path())
-        .env("AGENT_LOWMEM_TEST_SECRET", secret)
+        .env("AGENT_LOWMEM_TEST_SECRET", &secret)
         .output()
         .unwrap();
 
@@ -81,7 +87,7 @@ fn doctor_json_exits_zero_and_redacts_paths_and_environment_values() {
     assert_eq!(report["schemaVersion"], 1);
     assert_eq!(report["phase"], "native-foundation");
     assert!(!stdout.contains(fixture.path().to_str().unwrap()));
-    assert!(!stdout.contains(secret));
+    assert!(!stdout.contains(&secret));
     assert!(output.stderr.is_empty());
 }
 
