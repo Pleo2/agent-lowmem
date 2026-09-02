@@ -15,10 +15,10 @@
 | --- | --- |
 | Host key | `darwin/arm64`; macOS `26.6.2`; `Mac14,15`; `Apple M2`; `8589934592` physical-memory bytes; `16384` page-size bytes |
 | Rust | `rustc 1.85.0 (4d91de4e4 2025-02-17)` |
-| Commit under test | `3307f75` |
+| Commit under test | `05bf7ec` |
 | Release binary | `402400` bytes |
 | Maximum resident set size | `1540096` bytes |
-| Warm-cache doctor timing | 20 recorded runs; median `2.460 ms`; p95 `5.541 ms` |
+| Warm-cache doctor timing | 20 recorded runs; median `2.343 ms`; p95 `3.440 ms` |
 | Gate commands | `cargo fmt --all -- --check`<br>`cargo clippy --workspace --all-targets -j 1 -- -D warnings`<br>`cargo test --workspace -j 1 -- --test-threads=1`<br>`cargo build --release -p agent-lowmem -j 1`<br>`cargo test --release -p agent-lowmem --test doctor_budget -j 1 -- --ignored --test-threads=1 --nocapture`<br>`stat -f '%z bytes' target/release/agent-lowmem`<br>`/usr/bin/time -l target/release/agent-lowmem doctor >/dev/null`<br>`git diff --check` |
 
 These are development measurements on the reference Mac, not a release or portability claim.
