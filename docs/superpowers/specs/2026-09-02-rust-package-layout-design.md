@@ -77,9 +77,10 @@ introduced later when a real second Rust package exists.
 2. Move `crates/agent-lowmem/src` to `src` and
    `crates/agent-lowmem/tests` to `tests` using Git-aware moves.
 3. Remove the now-empty `crates/agent-lowmem` directory.
-4. Update the source guard in `tests/doctor_cli.rs`, the gate commands in
-   `docs/dependencies-v1.md`, and the package terminology in section 8.2 of the
-   v1 design.
+4. Preserve the manifest-relative source guard in `tests/doctor_cli.rs`; its
+   `env!("CARGO_MANIFEST_DIR")/src` lookup follows the package move without a
+   code change. Update current gate and architecture documentation to the root
+   package terminology.
 5. Preserve the completed Phase 1 plan as historical implementation evidence,
    but add a clear note that its original paths were superseded by this
    migration rather than rewriting its recorded steps.

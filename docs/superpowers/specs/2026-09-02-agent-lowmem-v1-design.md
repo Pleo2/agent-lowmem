@@ -234,11 +234,11 @@ The shipped CLI and its production libraries are Rust. They do not link a Swift 
 
 The repository contains `tools/pressure-probe`, a Swift research instrument with no third-party package dependencies. Swift was selected for that probe because the public macOS Dispatch memory-pressure API is directly exposed there and the reference Mac already had Swift 6.3 while Rust was not installed. The probe is observational, is excluded from release artifacts, and does not define the production architecture.
 
-If evidence later justifies pressure-based behavior, it requires a new design revision and a narrow Rust macOS integration. The safe Rust core remains independent of Dispatch. Any required FFI or `unsafe` code must be isolated in one platform module, documented with safety invariants, audited, and tested separately; it cannot enter by silently weakening a workspace-wide rule.
+If evidence later justifies pressure-based behavior, it requires a new design revision and a narrow Rust macOS integration. The safe Rust core remains independent of Dispatch. Any required FFI or `unsafe` code must be isolated in one platform module, documented with safety invariants, audited, and tested separately; it cannot enter by silently weakening a package-wide rule.
 
-### 8.2 Rust workspace
+### 8.2 Rust package
 
-The Rust workspace uses edition 2024 with Rust 1.85 as its minimum supported Rust version. Stable release and CI toolchains use a committed `Cargo.lock`.
+The root Rust package uses edition 2024 with Rust 1.85 as its minimum supported Rust version. Stable release and CI toolchains use a committed `Cargo.lock`.
 
 The production design separates:
 
@@ -250,7 +250,7 @@ The production design separates:
 - per-user locking;
 - owned process-group lifecycle and timeout supervision.
 
-First-party production crates compile with `#![forbid(unsafe_code)]` in v1. Platform operations must enter through reviewed safe standard-library or dependency interfaces. Direct runtime dependencies require a documented purpose, source review, license approval, and a version committed in `Cargo.lock`; this spec does not pre-approve a crate merely by naming it.
+The first-party production package compiles with `#![forbid(unsafe_code)]` in v1. Platform operations must enter through reviewed safe standard-library or dependency interfaces. Direct runtime dependencies require a documented purpose, source review, license approval, and a version committed in `Cargo.lock`; this spec does not pre-approve a crate merely by naming it.
 
 The supervisor uses no Tokio, async-std, daemon, resident service, or polling of the system process table. Its steady-state child loop performs only child-status, signal, warning-deadline, and timeout work.
 
@@ -667,7 +667,7 @@ Agent Lowmem itself is local-only and sends no telemetry. The trusted repository
 
 It must:
 
-- compile all first-party production crates with `#![forbid(unsafe_code)]`;
+- compile the first-party production package with `#![forbid(unsafe_code)]`;
 - exclude the Swift pressure probe and raw traces from production packages;
 - avoid printing or persisting environment-variable values;
 - avoid shell-string construction by Agent Lowmem;
@@ -815,7 +815,7 @@ Version 1 is ready only when:
 21. A normal child failure preserves its output and exact code; every result uses a reason from the closed v1 enum, satisfies the origin/code mapping, and validates against `schemas/result-v1.schema.json`.
 22. An escaped descendant is never claimed as cleaned up or targeted through process-name scanning.
 23. `restore` works when the executable can run even if host inspection marks `init` and `run` unsupported, preserves unrelated content, and implements ordinary and forced-block behavior exactly.
-24. All first-party production crates reject `unsafe`, Agent Lowmem itself makes no network request, and no production package contains the Swift probe.
+24. All first-party production Rust code rejects `unsafe`, Agent Lowmem itself makes no network request, and no production package contains the Swift probe.
 25. Unit, integration, end-to-end, dependency-policy, and release checks pass sequentially.
 26. Native and npm-launcher resource budgets pass on the recorded reference fixture and host.
 27. Homebrew, GitHub Release, and the macOS npm platform package contain the same signed native binary; portable npm installation remains non-failing on unsupported platforms.

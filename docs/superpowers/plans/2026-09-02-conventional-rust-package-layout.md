@@ -15,7 +15,7 @@
 - Work directly on a clean, synchronized `main`, as explicitly requested before the first release; do not create a feature branch or worktree.
 - Execute every formatter, compiler, linter, test, and measurement sequentially with one worker.
 - Preserve Rust 1.85.0, edition 2024, the existing direct dependency set, and every resolved version in `Cargo.lock`.
-- Preserve all Rust module contents and public behavior; this migration changes paths and manifest ownership only.
+- Preserve all production Rust behavior; only manifest-relative test fixture paths may change with package ownership.
 - Keep `tools/pressure-probe` outside the production package and release artifacts.
 - Do not add a Cargo workspace, second Rust package, new dependency, CLI behavior, schema value, or release artifact.
 - Preserve the completed Phase 1 plan as historical evidence; annotate its superseded paths instead of rewriting its recorded steps.
@@ -48,6 +48,7 @@
 - Delete: `crates/agent-lowmem/Cargo.toml`
 - Move: `crates/agent-lowmem/src/*.rs` to `src/*.rs`
 - Move: `crates/agent-lowmem/tests/*.rs` to `tests/*.rs`
+- Modify: `src/result.rs` test-only schema fixture path
 - Preserve: `Cargo.lock`
 
 **Interfaces:**
@@ -152,12 +153,12 @@ git diff --stat
 git diff -- Cargo.toml
 ```
 
-Expected: only the manifest replacement, Git-detected source/test moves, and removal of the nested manifest are present; no module contents, dependency versions, schemas, or Swift files changed.
+Expected: only the manifest replacement, Git-detected source/test moves, removal of the nested manifest, and the manifest-relative schema fixture path are present; no production behavior, dependency versions, schemas, or Swift files changed.
 
 Commit:
 
 ```bash
-git add -A -- Cargo.toml crates/agent-lowmem src tests
+git add -- Cargo.toml src tests
 git commit -m "refactor: adopt conventional Rust package layout"
 ```
 

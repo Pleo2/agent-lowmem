@@ -2,6 +2,13 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILLS: Use `superpowers:executing-plans` and `superpowers:test-driven-development` to implement this plan task-by-task. Execute inline and sequentially on the reference Mac; do not dispatch subagents unless the user explicitly authorizes the additional memory risk. Steps use checkbox (`- [ ]`) syntax for tracking.
 
+> **Historical layout note (2026-09-02):** This completed plan records the
+> original virtual-workspace implementation paths. The production package was
+> subsequently moved from `crates/agent-lowmem` to the conventional root
+> `src/` and `tests/` layout by
+> `docs/superpowers/specs/2026-09-02-rust-package-layout-design.md`. The task
+> bodies below remain unchanged as implementation evidence.
+
 **Goal:** Establish the production Rust workspace and deliver a private development checkpoint of `agent-lowmem doctor` that inspects the reference host and basic Git/package-manager evidence without starting child processes.
 
 **Architecture:** One small production crate contains focused modules for result contracts, CLI parsing, host inspection, repository discovery, and doctor presentation. Native host facts enter through an injectable `HostSource`; the macOS implementation uses the safe `sysctl` crate, while deterministic tests use in-memory evidence. This phase does not implement `run`, locking, script classification, managed files, or distribution, and must not be released independently.
