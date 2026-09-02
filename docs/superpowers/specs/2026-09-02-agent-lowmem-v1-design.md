@@ -1,10 +1,10 @@
 # Agent Lowmem v1 Design
 
-**Status:** Proposed for implementation
+**Status:** Candidate for final design review
 
 **Date:** 2026-09-02
 
-**Revision:** 3 — kernel-first scope approved
+**Revision:** 4 — deterministic, evidence-first MVP
 
 **Product:** Agent Lowmem
 
@@ -16,105 +16,123 @@
 
 ## 1. Summary
 
-Agent Lowmem is an open-source, policy-first native command-line tool for running coding-agent workloads conservatively on memory-constrained Macs. Its core is written in Rust, while version 1 validates one protective profile: the Apple M2 MacBook Air with 8 GB of unified memory on macOS 26.x, running JavaScript/TypeScript repositories that use Node.js, npm or pnpm, Next.js, NestJS, Vitest, or Jest.
+Agent Lowmem is an open-source native command-line policy runner for coding-agent workloads on memory-constrained Macs. The production CLI is written in Rust. Version 1 is validated on the owner's Apple M2 MacBook Air with 8 GiB of unified memory (`Mac14,15`, 16 KiB pages) and macOS 26.x, in JavaScript and TypeScript repositories that use Node.js, npm or pnpm, Next.js, NestJS, Vitest, or Jest.
 
-The tool uses the native macOS kernel pressure state as its only v1 protection boundary, generates repository guidance through a managed `AGENTS.md` block, and launches one heavy operation at a time with supported serial options and a conservative Node old-space guardrail. It observes the managed process group but does not pretend that macOS provides a hard per-tree memory cap. Agent Lowmem never requires `sudo`, makes no permanent macOS tuning changes, and only controls processes it starts.
+Version 1 enforces only controls whose behavior is deterministic and independently testable:
+
+- one Agent Lowmem-managed heavy operation per local user;
+- no watch mode or recognized background execution;
+- one test worker where the detected tool version exposes a verified public option;
+- bounded wall-clock time;
+- focused validation guidance before broad suites;
+- owned process-group cleanup on timeout, interruption, or supervisor failure.
+
+Version 1 does **not** set a Node heap size, infer a safe memory budget, block launch from a private pressure snapshot, or terminate a command in response to an unvalidated memory-pressure signal. Those mechanisms previously created a stronger promise than the available evidence supported.
 
 The v1 promise is deliberately narrow:
 
-> Reduce memory-pressure risk on an 8 GB Mac by serializing supported heavy work and stopping it when macOS reports unsafe pressure.
+> Reduce avoidable memory contention on the validated 8 GiB Mac by serializing supported heavy work and applying verified low-concurrency execution rules.
+
+This is risk reduction, not a guarantee that every build will complete or that macOS will never swap, beachball, freeze, or terminate a process.
 
 ## 2. Problem
 
-Coding agents frequently launch tests, type checks, builds, package managers, browser tooling, and helper processes concurrently. On an 8 GB MacBook, the editor, browser, agent client, MCP processes, and operating system already consume much of the available memory before project validation begins.
+Coding agents frequently launch tests, type checks, builds, package managers, browser tooling, and helpers concurrently. On an 8 GiB Mac, the editor, browser, agent client, MCP processes, and operating system already consume much of the available memory before repository validation begins.
 
-Existing controls are usually informal instructions scattered across repositories. They depend on every agent remembering to:
+Existing controls are informal instructions scattered across repositories. They depend on every agent remembering to:
 
-- avoid parallel heavy work;
+- run only one heavy operation at a time;
 - disable watch mode;
-- use a single test worker;
-- set a conservative Node heap for each command;
-- prefer focused tests before broad suites;
-- stop only task-owned processes when pressure becomes unsafe.
+- request one test worker;
+- prefer a focused test before a full suite;
+- use a timeout;
+- stop only task-owned processes.
 
-These practices work but are inconsistent, reactive, and difficult to reuse. Agent Lowmem turns them into an observable and repeatable local policy.
+Agent Lowmem turns those practices into a reusable repository policy and a local execution boundary. It does not pretend that macOS offers a cgroup-equivalent hard memory limit for an arbitrary descendant tree.
 
 ## 3. Goals
 
 Version 1 must:
 
-1. Detect whether the host matches the validated Apple M2 8 GB and macOS 26.x profile, while allowing read-only observation on other macOS arm64 profiles.
-2. Classify memory pressure as green, amber, or red by mapping the current kernel state directly, without learned thresholds.
-3. Generate an idempotent, clearly delimited Agent Lowmem policy block in `AGENTS.md`.
-4. Detect npm or pnpm and supported JavaScript/TypeScript tools from repository evidence.
-5. Run one heavy Agent Lowmem-managed operation at a time across the local user session.
-6. Apply a fixed command-scoped Node heap guardrail when useful and supported single-worker or serial options.
-7. Reject watch mode, serialize Agent Lowmem invocations, and disclose internal fan-out that a supported tool cannot control through a verified public interface.
-8. Monitor memory while a managed child command runs.
-9. Stop only the managed child process group on the first observed critical sample or after two consecutive warning samples.
-10. Explain every decision in human-readable output and provide structured results without mixing them into child stdout or stderr.
-11. Leave no daemon, service, global environment variable, or permanent system change behind.
-12. Restore repository files changed by `init` through an explicit preview-first command.
+1. Identify the validated reference host exactly and report other macOS arm64 hosts as observation-only.
+2. Generate an idempotent, clearly delimited Agent Lowmem block in the Git root's `AGENTS.md`.
+3. Detect npm or pnpm, configured workspaces, supported scripts, and supported tool versions from repository evidence without executing repository code during inspection.
+4. Run one Agent Lowmem-managed heavy operation at a time across the local user session.
+5. Reject watch mode, recognized background execution, nested Agent Lowmem invocation, and unsupported concurrency controls.
+6. Apply one-worker or serial flags only through a version-tested public interface.
+7. Re-inspect package scripts and lifecycle scripts for every run so repository drift cannot silently bypass the launch policy.
+8. Preserve the caller's environment, including `NODE_OPTIONS`, without adding or rewriting a heap limit.
+9. Launch the package manager with an argument array, inherit terminal streams, and supervise only the process group Agent Lowmem creates.
+10. Warn at 80% of the configured timeout and terminate the owned process group at the deadline.
+11. Explain each decision in human-readable output and optionally write a structured result without mixing JSON into child output.
+12. Leave no daemon, service, global environment variable, permanent macOS setting, or background monitor behind.
+13. Restore managed repository files through a preview-first command, including a narrow explicit escape hatch for an edited managed block.
 
-## 4. Non-goals
+## 4. Non-goals and explicit limitations
 
 Version 1 will not:
 
-- optimize macOS kernel, swap, compressed memory, launch agents, or system settings;
-- kill browsers, editors, MCP servers, containers, or unrelated processes;
-- modify global shell profiles, npm configuration, Node installations, or package-manager stores;
-- promise that every full build can complete locally under the fixed protective policy;
-- replace CI for broad validation that exceeds the laptop's safe capacity;
-- support Intel Macs, Linux, Windows, Docker orchestration, Python, Rust, Java, or mobile toolchains;
-- claim validated protection for M1, M3, M4, other memory sizes, Intel Macs, or macOS major versions other than 26 in v1;
-- support `init` or `run` for repositories without Git;
-- run as a resident daemon or menu-bar application;
+- tune the macOS kernel, swap, compressed memory, launch agents, or system settings;
+- kill or reconfigure browsers, editors, MCP servers, containers, or unrelated processes;
+- modify global shell profiles, npm configuration, Node installations, package-manager stores, or inherited `NODE_OPTIONS`;
+- assign green, amber, or red health from `kern.memorystatus_vm_pressure_level`;
+- use a memory-pressure event as a preflight or termination boundary;
+- enforce a per-process or process-tree memory cap;
+- promise that every full build can complete locally;
+- promise that the Mac will never swap, beachball, freeze, or reach OOM;
+- attribute system-wide pressure to the managed command;
+- retry an OOM, failed command, interrupted command, or timeout automatically;
+- clean partial build artifacts using guessed paths;
+- support Intel Macs, Linux, Windows, Docker orchestration, Python, Rust, Java, Flutter, or mobile toolchains in the native v1 runner;
+- claim validation for M1, M3, M4, a different Mac model, another memory size, or another macOS major version;
+- support `init` or `run` outside a Git-backed JavaScript or TypeScript repository;
 - coordinate multiple autonomous agents beyond publishing and enforcing repository policy;
-- optimize token usage, model context, or an agent's semantic memory;
-- prevent a human or agent from bypassing the policy by invoking package-manager commands directly;
-- attribute system-wide pressure to a particular unrelated application;
-- enforce a hard memory cap for a process tree, perfectly observe short-lived process peaks, or deduplicate shared physical pages across processes;
-- predict pressure from compressor or swap derivatives in v1;
-- guarantee that the Mac never swaps, freezes, or reaches OOM before a best-effort kernel signal can be observed.
+- prevent a user or agent from bypassing the policy by invoking package-manager commands directly;
+- guarantee cleanup of a descendant that deliberately or indirectly escapes the owned process group with `setsid` or a new process group.
+
+The last limitation is important: Agent Lowmem signals the process group it created. A process that escapes that group is no longer inside the ownership boundary and may survive cleanup. V1 reports this boundary and never scans for similarly named processes to compensate.
 
 ## 5. Users and primary scenario
 
-The primary user is a developer using a coding agent on an Apple M2 MacBook Air with 8 GB of unified memory.
+The primary user is a developer using a coding agent on the validated Apple M2 MacBook Air with 8 GiB of unified memory.
 
 The primary scenario is:
 
-1. The developer opens a Git-backed JavaScript/TypeScript repository.
-2. `agent-lowmem doctor` reports whether heavy work is currently safe.
-3. `agent-lowmem init` creates the local policy and configuration.
-4. The coding agent reads `AGENTS.md` and invokes validation through Agent Lowmem.
-5. `agent-lowmem run test` or `agent-lowmem run build` serializes the operation, applies supported guardrails, and monitors pressure.
-6. The policy prioritizes interactivity. The command either completes or is stopped with an actionable explanation when observed pressure becomes unsafe.
+1. The developer opens a Git-backed JavaScript or TypeScript repository.
+2. `agent-lowmem doctor` reports host support, repository support, available operations, and current lock state.
+3. `agent-lowmem init --dry-run` previews policy and configuration changes.
+4. `agent-lowmem init` writes the approved managed files.
+5. The coding agent reads `AGENTS.md` and starts with a focused validation command.
+6. `agent-lowmem run test -- path/to/file.test.ts` or another configured operation acquires the global lock and applies the adapter's verified low-concurrency strategy.
+7. The command completes, fails normally, is interrupted, or reaches its timeout; Agent Lowmem reports the origin and releases owned resources.
+
+For broad Next.js or NestJS builds whose internal fan-out cannot be controlled through a verified interface, output states that limitation before launch and recommends CI when local interactivity matters more than completing the full build.
 
 ## 6. Product principles
 
+### Evidence before enforcement
+
+An observed signal does not become a termination boundary until prospective measurements show that it is timely and sufficiently specific on the validated host. Unknown pressure timing and an unmeasured heap number are not safety controls.
+
+### Deterministic controls first
+
+Serialization, no-watch rules, verified test-worker flags, timeouts, and process ownership have observable behavior without learned thresholds. They form the v1 policy.
+
 ### Safety before throughput
 
-The laptop remaining usable is more important than maximizing build speed. A safe, slower run with verified serialization where available is preferable to a faster run that causes sustained swap growth or a system freeze.
-
-### Capability before restriction
-
-Agent Lowmem should still attempt useful work. It reduces concurrency and scopes validation before refusing execution. An amber or red preflight blocks a heavy command on the validated profile. Unavailable mandatory measurements return a measurement error instead of pretending the host is healthy or unhealthy.
+The laptop remaining usable is more important than maximizing local build speed. Focused validation and CI are valid outcomes when a broad local operation cannot be constrained honestly.
 
 ### Explicit and reversible behavior
 
-Every file change is previewable and delimited. Every runtime limit is command-scoped. No implicit global tuning is allowed.
+Every repository write is previewable and delimited. Runtime controls are command-scoped. No global tuning is allowed.
 
 ### Evidence over guessed flags
 
-Adapters must identify installed tools and versions from lockfiles, manifests, and resolved executables. An adapter may apply only options supported by that detected tool version.
+Adapters identify the selected tool and installed version from repository files. They apply only options supported by a tested version range. An unknown version returns unsupported rather than inheriting a plausible flag from another version.
 
 ### Ownership boundaries
 
-Agent Lowmem may signal only the process group it created. It may report unrelated high-memory processes but never terminate or reconfigure them.
-
-### Deliberate v1 throughput limit
-
-Version 1 requests one worker wherever the detected tool exposes a verified option. It never claims to control internal workers when no stable, version-tested interface exists. This deliberately sacrifices throughput and marketing breadth for a simpler, more honest first release.
+Agent Lowmem may signal only the process group it created. It does not infer ownership from names, ports, paths, or resource consumption.
 
 ## 7. User interface
 
@@ -122,7 +140,7 @@ The executable is `agent-lowmem` and exposes four v1 commands.
 
 ### `agent-lowmem doctor`
 
-Inspects the host and repository without writing files.
+Inspects the host and repository without writing files or executing repository code.
 
 ```text
 agent-lowmem doctor
@@ -131,16 +149,15 @@ agent-lowmem doctor --json
 
 It reports:
 
-- host architecture, validated-run support, and observation-only status;
-- physical memory;
-- current kernel memory-pressure state and its direct green, amber, or red mapping;
-- cumulative swap currently in use, labeled as historical evidence rather than proof of an active crisis;
-- detected package manager and supported tools;
-- fixed pressure policy, optional Node heap guardrail, its coverage, and known internal fan-out limitations;
-- whether another managed heavy operation owns the global lock;
-- warnings and recommended next action.
+- operating system, architecture, exact hardware identity, physical memory, page size, and validated-profile status;
+- whether `init` and `run` are supported on the host;
+- Git root availability without printing the absolute root in structured output;
+- detected package manager, workspaces, configured scripts, installed tool versions, and adapter support;
+- fixed v1 controls and known internal fan-out limitations;
+- whether another Agent Lowmem operation owns the per-user lock;
+- the next recommended action.
 
-`doctor` succeeds when it can inspect the host even if the profile is observation-only or the current pressure state is amber or red. Its structured output exposes `runSupported: false` and the reasons. It does not require a Git repository; outside one, repository fields are reported as unavailable. A mandatory pressure measurement failure returns code 69.
+`doctor` does not report a current memory-health color and does not read the private pressure-level sysctl. It succeeds with `runSupported: false` on an unvalidated macOS arm64 host or outside a repository, provided the inspection itself completes.
 
 ### `agent-lowmem init`
 
@@ -153,219 +170,212 @@ agent-lowmem init
 
 The command:
 
-1. requires the validated v1 run profile, a Git repository, and a root `package.json`;
-2. runs the same inspection as `doctor`;
-3. previews changes when `--dry-run` is supplied;
+1. requires the validated v1 host, a Git repository, and a root `package.json`;
+2. performs the same repository inspection as `doctor`;
+3. previews exact changes when `--dry-run` is supplied;
 4. writes `.agent-lowmem.json`;
 5. inserts or replaces one managed block in the Git root's `AGENTS.md`;
-6. writes a private restoration manifest under the repository's resolved Git metadata directory, containing hashes and the prior managed content;
-7. generates no timestamps or absolute paths and remains byte-for-byte idempotent for the same CLI version, configuration, and repository evidence.
+6. writes a private restoration manifest inside the repository's resolved Git metadata directory;
+7. emits no timestamp or absolute path into managed repository files;
+8. remains byte-for-byte idempotent for the same CLI version, configuration, and repository evidence.
 
-The Git root and metadata directory are resolved by walking parent directories and interpreting a `.git` directory or worktree pointer file. `doctor` and `init` do not spawn `git` merely to discover the repository.
+The Git root and metadata directory are resolved by walking parents and interpreting either a `.git` directory or a worktree pointer file. Inspection does not spawn `git`.
 
 ### `agent-lowmem run`
 
-Runs a supported repository script under the active policy.
+Runs a supported configured operation.
 
 ```text
 agent-lowmem run test
 agent-lowmem run test -- path/to/file.test.ts
 agent-lowmem run test --workspace web -- path/to/file.test.ts
 agent-lowmem run typecheck
-agent-lowmem run build
 agent-lowmem run lint
+agent-lowmem run build
 agent-lowmem run build --json-file .agent-lowmem-result.json
 ```
 
-Only scripts present in the selected `package.json` may be executed. `--workspace <key>` is required for a monorepo target and must match a stable key in `.agent-lowmem.json`; pnpm targets are executed with the entry's exact `--filter`. Arbitrary shell execution is outside v1. Additional arguments are passed as argument-array elements without shell interpolation.
+Only operations present in `.agent-lowmem.json` and scripts present in the selected `package.json` may run. `--workspace <key>` must match a stable configured key. Arbitrary shell commands are outside v1. Extra arguments are forwarded as argument-array elements without shell interpolation by Agent Lowmem.
 
-`run` requires the validated v1 profile and a green preflight. Amber and red preflights return code 75 without launching the script. The child inherits stdin, stdout, and stderr. `run` therefore does not support `--json` on stdout; it accepts `--json-file <path>` and atomically writes Agent Lowmem's structured result there. Test, typecheck, and lint operations default to a 15-minute timeout, while builds default to 30 minutes. Every operation prints a warning at 80% of its wall-clock timeout.
+The trust boundary is explicit: Agent Lowmem starts npm or pnpm without constructing a shell string, but those package managers execute package scripts using their documented shell semantics. Agent Lowmem is not a sandbox for repository code.
+
+`run` requires the validated profile. It acquires the global lock, revalidates the relevant manifests and scripts, and releases the lock without starting a child if evidence changed during launch planning. Child stdin, stdout, and stderr are inherited. Agent Lowmem JSON is therefore available only through `--json-file <path>`.
+
+Test, typecheck, and lint operations default to 15 minutes. Builds default to 30 minutes. Each operation prints one warning at 80% and is terminated at its deadline. Timeouts may be configured from 60 through 3,600 seconds.
 
 ### `agent-lowmem restore`
 
-Removes Agent Lowmem's managed repository changes.
+Removes Agent Lowmem-managed repository changes.
 
 ```text
 agent-lowmem restore --dry-run
 agent-lowmem restore
+agent-lowmem restore --dry-run --force-managed-block
+agent-lowmem restore --force-managed-block
 ```
 
-It removes the managed `AGENTS.md` block and restores or removes `.agent-lowmem.json` according to the restoration manifest. `restore` does not require a validated host because recovery must remain possible after a hardware or operating-system change. After a fresh clone where that private manifest does not exist, it may remove a valid versioned managed block using its marker and semantic content hash, but it never reconstructs unknown prior content. It refuses restoration when managed content has been edited semantically and never rewrites unrelated `AGENTS.md` content.
+`restore` never requires a validated host. With a restoration manifest, it verifies exact managed bytes and restores or removes `.agent-lowmem.json` and the managed `AGENTS.md` block without touching surrounding content.
 
-Without a restoration manifest, `.agent-lowmem.json` is removed only when it byte-for-byte matches the deterministic configuration that the current CLI would generate from current repository evidence. Otherwise it is preserved and reported for manual review.
+After a fresh clone without a private manifest, it may remove a managed block whose exact body hash matches its marker. It removes `.agent-lowmem.json` only when the file exactly matches deterministic current output; otherwise it preserves the file for manual review.
+
+If the block body was edited or reformatted, ordinary restore returns conflict code 78. `--force-managed-block` is a narrow escape hatch: it removes exactly one well-formed start-to-end Agent Lowmem block even when its body hash differs. It never removes text outside the markers, follows no symlink, reconstructs no unknown prior content, and never forces removal of a conflicting `.agent-lowmem.json`. Dry-run displays the exact affected byte range before the destructive form is used.
 
 ## 8. Architecture
 
-Agent Lowmem is a native Rust CLI organized into focused modules. The executable does not require Node.js to start, does not embed a garbage collector, and does not use an asynchronous runtime.
+### 8.1 Production language boundary
 
-The Rust workspace uses edition 2024 with Rust 1.85 as its minimum supported Rust version. Release and CI builds use the current stable Rust toolchain and a committed `Cargo.lock`.
+The shipped CLI and its production libraries are Rust. They do not link a Swift helper, require a Swift runtime, or invoke the experimental probe.
 
-First-party crates must declare `#![forbid(unsafe_code)]`. V1 starts with reviewed safe interfaces from `sysctl` 0.7.1 for named kernel values, `libproc` 0.14.11 for process-group enumeration and `RUsageInfoV4`, and `rustix` 1.1.4 for Unix process-group and signal operations; these exact versions are committed in `Cargo.lock`. Every direct runtime dependency requires a documented purpose and source review. If a future feature requires first-party Mach or Dispatch FFI, it must be specified separately behind one narrow platform crate rather than weakening this rule silently.
+The repository contains `tools/pressure-probe`, a Swift research instrument with no third-party package dependencies. Swift was selected for that probe because the public macOS Dispatch memory-pressure API is directly exposed there and the reference Mac already had Swift 6.3 while Rust was not installed. The probe is observational, is excluded from release artifacts, and does not define the production architecture.
 
-The core runs on one thread. It monitors the managed child with a synchronous `try_wait` and fixed sampling loop rather than adding Tokio, async-std, a background service, or a resident Dispatch queue.
+If evidence later justifies pressure-based behavior, it requires a new design revision and a narrow Rust macOS integration. The safe Rust core remains independent of Dispatch. Any required FFI or `unsafe` code must be isolated in one platform module, documented with safety invariants, audited, and tested separately; it cannot enter by silently weakening a workspace-wide rule.
 
-Release builds use link-time optimization, one code-generation unit, symbol stripping, and `panic = "unwind"`. A top-level unwind boundary converts unexpected panics into cleanup of the owned child process group and lock before returning an internal error. Optimization targets runtime performance while preserving a small binary; lifecycle safety and measurement take precedence over speculative size reductions.
+### 8.2 Rust workspace
 
-### 8.1 Host inspector
+The Rust workspace uses edition 2024 with Rust 1.85 as its minimum supported Rust version. Stable release and CI toolchains use a committed `Cargo.lock`.
 
-Responsibilities:
+The production design separates:
 
-- detect `darwin`, `arm64`, chip family, physical memory, page size, and macOS major version;
-- mark only Apple M2, 8 GiB, 16 KiB pages, and macOS major version 26 as the validated v1 run profile;
-- read physical memory and the kernel memory-pressure state;
-- read current swap usage as contextual telemetry, without deriving health from cumulative use;
-- normalize the public macOS pressure constants into `normal`, `warning`, and `critical` states;
-- probe required values at runtime so a compatible macOS 26 minor or patch update is accepted only when the expected pressure interface still works;
-- avoid logging serial numbers, hardware UUIDs, usernames, environment secrets, or command environments.
+- CLI parsing and human/structured presentation;
+- host capability inspection;
+- repository and package evidence inspection;
+- adapter selection and launch-plan construction;
+- managed-file generation and restoration;
+- per-user locking;
+- owned process-group lifecycle and timeout supervision.
 
-The initial native keys are `kern.osproductversion`, `machdep.cpu.brand_string`, `hw.memsize`, `hw.pagesize`, `kern.memorystatus_vm_pressure_level`, and `vm.swapusage`. The capability probe validates existence, readable type, expected width or layout, and pressure-value domain. Profile and pressure keys are mandatory before `runSupported` can be true; `vm.swapusage` is optional context and may be reported as unavailable without changing the pressure class. V1 does not spawn `sw_vers`, `sysctl`, `vm_stat`, or `memory_pressure`; those command names describe diagnostic equivalents, not runtime dependencies.
+First-party production crates compile with `#![forbid(unsafe_code)]` in v1. Platform operations must enter through reviewed safe standard-library or dependency interfaces. Direct runtime dependencies require a documented purpose, source review, license approval, and a version committed in `Cargo.lock`; this spec does not pre-approve a crate merely by naming it.
 
-For macOS 26, the exported pressure values must match the public dispatch flags `NORMAL = 0x01`, `WARN = 0x02`, and `CRITICAL = 0x04`. An unknown value or unavailable mandatory signal produces measurement error 69. It does not fabricate a green, amber, or red classification.
+The supervisor uses no Tokio, async-std, daemon, resident service, or polling of the system process table. Its steady-state child loop performs only child-status, signal, warning-deadline, and timeout work.
 
-Platform calls are exposed to first-party code through a reviewed safe dependency boundary. First-party crates remain free of `unsafe` blocks.
+Release builds use link-time optimization, one code-generation unit, symbol stripping, and `panic = "unwind"`. A top-level unwind boundary performs best-effort owned process-group and lock cleanup before returning internal error 70.
 
-V1 has no sample cache, derivative calculation, learned threshold, or calibration artifact. Each command reads the current state directly. This removes stale-cache behavior and makes `doctor` a single bounded native inspection.
+### 8.3 Host inspector
 
-### 8.2 Repository inspector
+The validated v1 compatibility key is the conjunction of:
 
-Responsibilities:
+- `darwin` operating system;
+- `arm64` architecture;
+- hardware model exactly `Mac14,15`;
+- CPU brand exactly `Apple M2` after trimming terminating whitespace;
+- physical memory exactly `8,589,934,592` bytes;
+- page size exactly `16,384` bytes;
+- macOS product-version major exactly `26`.
 
-- locate the Git root and its root-level `AGENTS.md`;
-- parse `package.json` without executing it;
-- identify npm or pnpm from `packageManager` and lockfiles;
-- enumerate declared npm or pnpm workspaces and require an explicit target when selection is ambiguous;
-- detect supported frameworks and test runners from declared and resolved dependencies;
-- detect `pre*` and `post*` lifecycle scripts associated with each configured operation;
-- return explicit unsupported or ambiguous states instead of guessing.
+The exact model and brand checks prevent an `Apple M2 Pro`, `Apple M2 Max`, or another M2 Mac from passing by prefix. Minor and patch releases within macOS 26 are accepted only when every required property remains readable with its expected type. An unavailable or differently shaped property makes the host unvalidated; it is never guessed.
 
-### 8.3 Pressure classifier
+These native properties are compatibility-sensitive profile identifiers, not memory-health signals. `doctor` may display their availability on another macOS arm64 host, but `init` and `run` return unsupported code 64 when the complete key does not match.
 
-The classifier maps the current kernel state directly and returns a class and reason. It never uses raw `Pages free`, the percentage printed by `memory_pressure -Q`, cumulative swap usage, compressor rates, or fitted thresholds as a health signal.
+### 8.4 Repository inspector
 
-The kernel memory-pressure state is canonical:
+The inspector:
 
-- **Green:** the kernel reports `normal`.
-- **Amber:** the kernel reports `warning`.
-- **Red:** the kernel reports `critical`.
+- locates the Git root and root `AGENTS.md` without executing `git`;
+- parses root and selected-workspace `package.json` files as data;
+- identifies npm or pnpm from `packageManager` plus the matching lockfile;
+- enumerates declared workspaces and requires an explicit stable key;
+- resolves a supported tool's installed `package.json` without executing the package;
+- compares its exact semantic version with the committed adapter matrix;
+- reads the selected target plus its `pre<name>` and `post<name>` lifecycle scripts on every run;
+- rejects ambiguous package-manager evidence, missing scripts, shell control operators it cannot classify safely, watch commands, background execution, and unsupported orchestrators;
+- returns explicit unsupported or conflict states instead of guessing.
 
-A green preflight is required for `run`. Amber and red preflights return code 75 without starting the child. During a run, critical pressure triggers protection on the first sample. Warning pressure triggers protection after two consecutive 250 ms samples; a normal sample resets the warning streak. Cumulative swap use is reported as historical context but never changes the class.
+The v1 script grammar is deliberately small. A managed phase must resolve to one direct supported executable plus literal arguments accepted by that adapter. The committed adapter matrix defines allowed executable names, version ranges, arguments, and denial tokens. Shell pipelines, lists, redirections, substitutions, background markers, shell functions, and unrecognized wrappers are unsupported. Forwarded CLI arguments are checked by the same adapter, so `--watch` cannot be reintroduced after `--`.
 
-Kernel pressure is system-wide. If an unrelated application causes warning or critical pressure, the managed operation may be terminated even after substantial work. This is an explicit v1 trade-off: preserving laptop responsiveness takes precedence over attributing fault or preserving a long local build.
+`init` does not freeze lifecycle-script contents into configuration. A lifecycle phase is safe only when the same parser and adapter matrix classify its direct command as `controlled` or explicitly `disclosed`; otherwise it blocks the run. A safe addition is incorporated into the current launch plan and reported as repository drift. This avoids forcing a new `init` merely because a classifiable `pretest` was added.
 
-### 8.4 Fixed policy and observed footprint
+Before locking, the launch plan records hashes of the relevant manifests. After acquiring the lock, Agent Lowmem re-reads those files. If any hash differs, it releases the lock, launches nothing, returns temporary-failure code 75, and recommends rerunning the command.
 
-The policy engine converts host, repository, and adapter evidence into a launch plan. Its fixed v1 controls are:
+### 8.5 Fixed execution policy
 
-- one Agent Lowmem-managed heavy operation per local user;
-- green-only launch;
-- termination on the first observed critical sample and after two consecutive warning samples;
+Every launch plan contains:
+
+- exactly one selected package manager and configured operation;
+- selected workspace and current lifecycle phases;
+- an argument array rather than a shell command built by Agent Lowmem;
+- adapter-provided serial or non-watch options;
+- a classification of internal fan-out as controlled, disclosed, or unsupported;
+- the per-user lock requirement;
+- the 80% warning point and final timeout;
+- explanations for terminal and structured output.
+
+The fixed v1 controls are:
+
+- one managed heavy operation per local user;
 - watch mode denied;
+- recognized background execution denied;
 - one worker where a verified adapter option exists;
-- a 1,024 MiB V8 old-space guardrail per Node process where the tool preserves `NODE_OPTIONS`;
-- a bounded wall-clock timeout with an 80% warning.
+- no automatic retry;
+- no `NODE_OPTIONS` mutation;
+- no pressure preflight, polling, or pressure-triggered termination;
+- a bounded timeout and owned group cleanup.
 
-The 1,024 MiB value is deliberately conservative for the validated 8 GiB profile. It is not a total-memory cap: native allocations, additional Node processes, worker threads, memory-mapped files, and tools that strip `NODE_OPTIONS` remain outside it. If a supported fixture cannot complete under the guardrail, v1 reports the limitation and recommends focused validation or CI; it does not raise the value automatically.
+The engine neither inspects environment values for policy nor mutates the caller's shell environment.
 
-Existing `NODE_OPTIONS` is never discarded. Agent Lowmem tokenizes it without evaluation solely to detect `--max-old-space-size` and `--max_old_space_size`, in either separated or `=` form. An unparsable value or a heap value other than 1,024 MiB returns configuration error 2 without printing the environment value. An equal value is preserved. Otherwise Agent Lowmem appends its guardrail to the original string. All other options remain byte-for-byte before the appended flag.
+### 8.6 Tool adapters
 
-The runner enumerates the proven process group once per second and sums each visible member's `ri_phys_footprint`. Human and structured output call this `sampledAggregateFootprint`; it is observation only and never causes termination in v1. The value can miss short-lived workers and can overcount shared physical pages, so output always includes the one-second interval and this limitation. The highest sampled value is recorded for diagnostics.
+Adapters cover:
 
-V1 does not set `RLIMIT_AS`, `RLIMIT_RSS`, or another inherited memory rlimit. macOS does not provide a cgroup-equivalent process-tree cap, address-space limits conflict with V8's virtual-memory reservations, and an rlimit would not repair the accounting gaps above.
+- npm and pnpm script forwarding;
+- Vitest non-watch, one-worker execution for tested versions;
+- Jest `--runInBand` execution for tested versions;
+- direct Next.js build recognition with explicit uncontrolled-internal-fan-out disclosure;
+- direct NestJS build recognition with explicit bundler-fan-out disclosure when applicable;
+- direct TypeScript typecheck and lint scripts whose command form is classifiable.
 
-A launch plan contains:
+An adapter may inject an option only when the installed version falls inside its tested compatibility range and the script form makes forwarding unambiguous. An unknown version, a compound shell pipeline, Turbo/Nx-style orchestration, or a script whose concurrency cannot be classified returns unsupported code 64 unless it is one of the explicitly disclosed Next.js or NestJS cases.
 
-- package manager executable and argument array;
-- selected package script;
-- selected workspace and lifecycle phases;
-- command-scoped environment additions;
-- adapter-provided serial options;
-- optional Node old-space guardrail and its known coverage;
-- verified serial options and disclosed internal fan-out limitations;
-- global-lock requirement;
-- fixed pressure action and sampling intervals;
-- timeout and its warning point;
-- explanations suitable for terminal and structured output.
+Next.js and NestJS are not described as single-worker builds unless a public version-tested interface proves that claim. On the reference 8 GiB host, their launch message recommends CI for broad builds when internal fan-out is disclosed. Agent Lowmem still prevents a second managed top-level operation, but it does not represent that lock as control over framework workers.
 
-The engine never mutates the caller's shell environment.
+### 8.7 Global operation lock
 
-### 8.5 Tool adapters
+A per-user lock prevents two Agent Lowmem heavy operations from starting in different repositories.
 
-Each adapter has one purpose: inspect a supported tool version and return argument-array additions, heap-guardrail coverage, and known worker behavior for an operation.
+The lock is created exclusively with user-only permissions in the macOS per-user temporary directory and records:
 
-V1 adapters cover:
-
-- npm script forwarding;
-- pnpm script forwarding;
-- Vitest single-worker, non-watch execution;
-- Jest serial execution;
-- Next.js build detection and pressure supervision without a blanket internal-worker guarantee;
-- NestJS build execution under the fixed pressure policy;
-- generic Node-backed `typecheck` and `lint` scripts under the fixed pressure policy.
-
-Adapters must not inject a flag solely because it worked in another version. Version-specific mappings are represented as a tested compatibility matrix that distinguishes options such as Vitest file parallelism, pool behavior, and worker count. An unknown Vitest or Jest version returns unsupported code 64 when serialization cannot be proven.
-
-Next.js is intentionally different. V1 may supervise a detected `next build`, but it does not edit or execute `next.config.*`, inject undocumented flags, or claim that all internal workers are serialized. The launch plan and documentation label Next.js internal fan-out as uncontrolled unless a future public, version-tested interface proves otherwise. They also disclose that known Next.js static workers may remove the inherited old-space flag, making guardrail coverage partial. Kernel pressure termination remains active regardless of framework behavior.
-
-Package-manager lifecycle scripts associated with an operation run sequentially in the same managed process group and timeout. `init` records their presence, and `run` re-inspects them so a manifest change cannot silently bypass the generated policy. Adapter flags apply only to the target script, so a lifecycle phase containing watch mode or background execution is rejected. Known internal parallel orchestration is disclosed and permitted only for explicitly supervised tools such as the limited Next.js case above.
-
-### 8.6 Global operation lock
-
-A per-user lock prevents two Agent Lowmem heavy operations from running simultaneously across repositories.
-
-The lock records:
-
-- owner PID;
-- process start identity;
-- repository path hash;
+- owner PID and process-start identity;
+- repository-path hash, never the raw path;
 - command category;
-- owned child process-group identity, once launched;
+- owned child process-group identity after launch;
 - acquisition time.
 
-The lock resides in the macOS per-user temporary directory, not the repository. A lock is stale only when both PID and process-start identity no longer match a live process. If a stale parent lock still references a live child group, `doctor` reports an orphan-recovery condition and `run` remains blocked; Agent Lowmem never kills that group without proving ownership and receiving an explicit future recovery command. Version 1 prints the proven PID/group identity and a manual recovery instruction but performs no automatic orphan kill. A normal live owner is reported and never terminated.
+A lock is stale only when both PID and process-start identity no longer match a live process. If a stale parent lock references a still-live child group, `doctor` reports an orphan-recovery condition and `run` remains blocked. Version 1 never kills that group automatically because parent death makes proof of continuing ownership weaker.
 
-### 8.7 Managed runner and monitor
+A nested command detects `AGENT_LOWMEM_ACTIVE=1` before lock acquisition and returns code 73 with reason `nested-invocation`. The opaque run identifier is never printed.
 
-The runner starts the package-manager command in a dedicated process group without invoking an intermediate shell. The child inherits stdin, stdout, and stderr so terminal colors, interactivity, and backpressure remain owned by the terminal rather than by in-memory pipes.
+### 8.8 Managed runner
 
-Before spawning, Agent Lowmem sets an inherited `AGENT_LOWMEM_ACTIVE=1` marker and an opaque run identifier. A nested invocation detects the marker before lock acquisition and returns code 73 with reason `nested-invocation`, without printing the identifier. This distinguishes package-script recursion from ordinary lock contention.
+The runner starts npm or pnpm in a new process group. Child stdin, stdout, and stderr remain attached to the caller's terminal; Agent Lowmem does not buffer them.
 
-The parent installs signal handlers before spawning. An external `SIGINT`, `SIGTERM`, or `SIGHUP` is forwarded to the managed process group. After group cleanup and lock release, Agent Lowmem atomically writes a requested structured result, restores the default handler, and re-raises the same signal on itself so the shell observes the conventional signal status, including 130 for Ctrl-C. A top-level unwind boundary and RAII guards clean up the owned group and lock after a Rust panic before returning code 70. `SIGKILL` and host power loss cannot be caught; this limitation is explicit and is why the lock records both parent and child identities.
+The parent installs signal handling before spawn. External `SIGINT`, `SIGTERM`, and `SIGHUP` are forwarded to the owned process group. After cleanup and optional structured-result writing, the parent restores the default disposition and re-raises the same signal so the shell observes the conventional status, including 130 for Ctrl-C.
 
-The monitor checks native pressure every 250 ms and samples aggregate process-group footprint every fourth tick. It terminates according to this order:
+The supervisor checks child state and deadlines at no more than four wakeups per second. It does not sample memory, enumerate processes, or poll private pressure state. At 80% of the timeout it prints one warning. At the deadline it sends `SIGTERM` to the owned process group, waits up to ten seconds, and sends `SIGKILL` only to the same group if members remain.
 
-1. the first 250 ms sample reporting kernel critical pressure triggers `SIGTERM`;
-2. kernel warning pressure for two consecutive 250 ms samples triggers `SIGTERM`;
-3. reaching 80% of the operation timeout prints one warning but does not change the deadline;
-4. operation timeout triggers `SIGTERM` and timeout status;
-5. after ten seconds, `SIGKILL` is sent only to surviving members of the proven owned process group;
-6. the lock is released after the group exits or ownership can no longer be proven.
+The lock is released only after the group exits or ownership can no longer be proven. A child that escaped the group may remain and is reported as outside the enforceable boundary. Agent Lowmem does not delete partial artifacts.
 
-The pressure action is fixed and cannot be weakened by repository configuration. If the supervisor sent the terminating signal for pressure, the parent returns 75 after cleanup regardless of the child's signal status. If it sent the signal for timeout, it returns 124. Attribution is intentionally irrelevant: the policy protects host usability whether pressure originated in the managed command or an unrelated application.
+### 8.9 Policy-file manager
 
-Agent Lowmem does not delete partial build artifacts. Its output states that the interrupted tool may have left generated files and recommends the tool's normal clean command or CI rather than guessing what can be removed.
-
-### 8.8 Policy-file manager
-
-The managed `AGENTS.md` section is bounded by a versioned marker containing a hash of the deterministic generated content:
+The managed `AGENTS.md` block uses versioned markers and an exact byte hash:
 
 ```markdown
-<!-- agent-lowmem:start version="1" content-sha256="<content-hash>" -->
+<!-- agent-lowmem:start format="1" content-sha256="<sha256>" -->
 ## Agent Lowmem resource policy
 
-Resource-heavy commands must run through Agent Lowmem. Run one heavy
+Run supported heavy validation through Agent Lowmem. Run only one heavy
 operation at a time, never use watch mode, and prefer focused validation
-before broad suites. Do not bypass an amber or red preflight, alter the
-fixed memory guardrail, or retry an OOM automatically.
+before broad suites. Do not retry OOM or timeout failures automatically.
+Agent Lowmem v1 does not impose a memory cap or guarantee responsiveness;
+use CI when a broad build cannot be constrained locally.
 <!-- agent-lowmem:end -->
 ```
 
-The marker's `version` identifies the managed-block format. The digest covers a canonical event stream produced by parsing the body between the markers as the limited Markdown subset generated by Agent Lowmem. In that stream, CRLF and LF are equivalent, soft line breaks and runs of prose whitespace become one ASCII space, and code spans, fenced code, links, and structural events retain their semantic content. Markdown parse failure is a conflict. This permits formatter reflow while detecting changed words, commands, links, or structure.
+The real marker contains the lowercase SHA-256 digest of the exact UTF-8 body bytes between the marker lines. Generated files use LF endings. There is no CommonMark parser and no semantic canonicalization dependency. A formatter change inside the block is therefore an intentional conflict handled by ordinary refusal or explicit `restore --force-managed-block`.
 
-The actual marker contains the lowercase SHA-256 digest, not the literal placeholder shown in the format example. The generated block includes repository-specific supported commands and workspace selectors but no timestamps, usernames, or absolute paths. Generation remains byte-for-byte deterministic; semantic comparison is used only to validate replacement and restoration. A CLI release that intentionally changes generated policy produces one reviewable hash/body diff. Content outside the markers is immutable from Agent Lowmem's perspective.
+Generation is deterministic and contains repository-specific commands and workspace keys but no timestamp, username, or absolute path. Agent Lowmem never rewrites content outside the markers.
 
 ## 9. Configuration
 
-`.agent-lowmem.json` is committed with the repository so humans and agents share the same policy.
+`.agent-lowmem.json` is committed so humans and agents share one operation allowlist.
 
 ```json
 {
@@ -373,33 +383,17 @@ The actual marker contains the lowercase SHA-256 digest, not the literal placeho
   "version": 1,
   "packageManager": "pnpm",
   "operations": {
-    "test": {
-      "script": "test",
-      "timeoutSeconds": 900,
-      "lifecycleScripts": []
-    },
-    "typecheck": {
-      "script": "typecheck",
-      "timeoutSeconds": 900,
-      "lifecycleScripts": []
-    },
-    "lint": {
-      "script": "lint",
-      "timeoutSeconds": 900,
-      "lifecycleScripts": []
-    },
-    "build": {
-      "script": "build",
-      "timeoutSeconds": 1800,
-      "lifecycleScripts": []
-    }
+    "test": { "script": "test", "timeoutSeconds": 900 },
+    "typecheck": { "script": "typecheck", "timeoutSeconds": 900 },
+    "lint": { "script": "lint", "timeoutSeconds": 900 },
+    "build": { "script": "build", "timeoutSeconds": 1800 }
   }
 }
 ```
 
-`init` includes only scripts that exist and records detected lifecycle phases. The user may remove an operation to make it unavailable through `run`.
+`init` includes only present scripts. A user may remove an operation to make it unavailable. Lifecycle phases are current repository evidence and are not duplicated in configuration.
 
-A monorepo adds a `workspaces` map. Keys are stable values accepted by `--workspace`; each entry contains a repository-relative `path`, the exact `packageManagerSelector` passed to npm `--workspace` or pnpm `--filter`, and its own `operations` map. For example:
+A monorepo adds stable workspace keys:
 
 ```json
 {
@@ -408,64 +402,59 @@ A monorepo adds a `workspaces` map. Keys are stable values accepted by `--worksp
       "path": "apps/web",
       "packageManagerSelector": "@acme/web",
       "operations": {
-        "test": {
-          "script": "test",
-          "timeoutSeconds": 900,
-          "lifecycleScripts": []
-        }
+        "test": { "script": "test", "timeoutSeconds": 900 }
       }
     }
   }
 }
 ```
 
-A command without `--workspace` uses only root operations. Commands never infer a target when multiple workspaces match, and generated `AGENTS.md` examples use the stable key rather than an absolute path.
-
-The schema accepts operation timeouts from 60 through 3600 seconds and rejects unknown fields, arbitrary commands, absolute workspace paths, and lifecycle data that no longer matches repository evidence. Concurrency, watch denial, pressure action, sampling intervals, and the Node guardrail are fixed implementation policy rather than configurable fields. V1 has no safety-weakening override: an agent cannot make a run more permissive by editing a committed text reason.
+The schema accepts timeouts from 60 through 3,600 seconds and rejects unknown fields, arbitrary commands, absolute workspace paths, duplicate selectors, and missing scripts. Concurrency, watch denial, lock behavior, environment preservation, retry behavior, and cleanup are fixed implementation policy rather than configurable fields.
 
 ## 10. Data flow
 
 ```text
 CLI request
-  -> host inspection
-  -> validated-profile or observation-only decision
-  -> repository inspection
-  -> direct kernel-pressure classification
-  -> adapter selection
-  -> fixed-policy launch decision
-  -> global lock acquisition
-  -> final green-state recheck
-  -> managed child launch
-  -> 250 ms pressure monitoring and 1 s footprint observation
-  -> child completion or owned-process termination
+  -> host capability inspection
+  -> repository and configuration inspection
+  -> adapter selection and fixed launch plan
+  -> relevant-file hash capture
+  -> per-user lock acquisition
+  -> relevant-file hash recheck
+  -> managed process-group launch
+  -> child, signal, warning-deadline, and timeout supervision
+  -> child completion or owned-group cleanup
   -> lock release
-  -> human result and optional atomic JSON result file
+  -> stable human result and optional atomic JSON result
 ```
 
-`doctor`, `init --dry-run`, and `restore --dry-run` stop before lock acquisition because they do not run heavy work. `doctor` may finish in observation-only mode. `init` requires the validated profile before writing. `restore` bypasses host validation so managed files remain recoverable.
+If the post-lock hash check fails, Agent Lowmem releases the lock and returns 75 without launching a child. `doctor`, dry-run commands, and `restore` do not acquire the heavy-operation lock.
 
-## 11. Errors and exit codes
+## 11. Errors and exit results
 
-Errors must state what happened, what Agent Lowmem changed, and the safest next action.
+Errors state what happened, whether a child started, what Agent Lowmem changed, and the safest next action.
 
 | Code | Meaning |
 | ---: | --- |
 | 0 | Command completed successfully |
-| 2 | Invalid CLI usage or configuration |
-| 64 | Unsupported run profile, repository, package manager, workspace, tool version, or script |
-| 69 | Required macOS measurement unavailable |
+| 2 | Invalid CLI usage or configuration schema |
+| 64 | Unsupported host, repository, package manager, workspace, script form, tool, or tool version |
 | 70 | Internal failure after best-effort owned-resource cleanup |
-| 73 | Live heavy-operation lock or nested invocation already exists |
-| 75 | Command blocked or terminated by the fixed pressure policy |
-| 78 | Managed-file conflict prevents safe init or restore |
+| 73 | Live operation lock or nested Agent Lowmem invocation |
+| 75 | Repository evidence changed during launch planning; retry from fresh inspection |
+| 78 | Managed-file or persistent configuration conflict |
 | 124 | Managed operation exceeded its configured timeout |
-| child | Managed command exit code, preserved exactly even when it equals a reserved Agent Lowmem value |
+| child | Natural managed-command exit code, preserved exactly |
 
-Agent Lowmem internal codes apply when no child result exists, except protection termination and timeout. If a child naturally exits with the same number as an internal code, the shell value is inherently ambiguous; terminal text and the structured result's `exitOrigin` field distinguish `child`, `supervisor-pressure`, `supervisor-timeout`, `external-signal`, and `internal`.
+Every `run` prints one stable final line to Agent Lowmem's stderr namespace:
 
-A child naturally terminated by a signal uses the platform's conventional `128 + signal` representation. That rule does not apply to a signal Agent Lowmem sent for pressure or timeout: those return 75 and 124 respectively. For an external `SIGINT`, `SIGTERM`, or `SIGHUP`, Agent Lowmem forwards, cleans up, and re-raises the signal on itself; the shell therefore observes the normal signal result, including 130 for Ctrl-C.
+```text
+agent-lowmem: result origin=<origin> code=<code> reason=<reason>
+```
 
-No automatic retry occurs after OOM, pressure protection, timeout, or a failed build. The tool recommends focused validation or CI rather than silently increasing resources.
+`origin` is one of `preflight`, `child`, `supervisor-timeout`, `external-signal`, or `internal`. `preflight` means no repository child started and covers unsupported input, lock contention, configuration conflict, or changed launch evidence. This line and the optional structured result disambiguate a natural child code that equals a reserved wrapper code. Pressure is not an exit origin in v1.
+
+A natural child signal is represented as `128 + signal`. When the user sends `SIGINT`, `SIGTERM`, or `SIGHUP` to Agent Lowmem, the parent forwards, cleans up, and re-raises the signal on itself.
 
 ## 12. Security and privacy
 
@@ -473,197 +462,212 @@ Version 1 is local-only and sends no telemetry.
 
 It must:
 
-- compile all first-party crates with `#![forbid(unsafe_code)]`;
+- compile all first-party production crates with `#![forbid(unsafe_code)]`;
+- exclude the Swift pressure probe and raw traces from production packages;
 - avoid printing or persisting environment-variable values;
-- avoid shell-string construction for child commands;
+- avoid shell-string construction by Agent Lowmem;
+- document that package-manager scripts remain trusted repository code;
 - validate configuration against a bundled schema;
-- refuse symlink traversal when writing managed files;
-- use atomic writes for configuration, manifests, and `AGENTS.md` updates;
-- store no raw process command lines in the lock;
-- hash repository paths recorded outside the repository;
-- make network access unnecessary for `doctor`, `init`, `run`, and `restore` after package installation;
-- commit `Cargo.lock` and deny unknown licenses, duplicate critical dependencies, yanked crates, and known advisories in CI;
+- refuse symlink traversal for managed writes and lock creation;
+- use user-only permissions plus atomic writes for configuration, manifests, locks, `AGENTS.md`, and JSON results;
+- store no raw command line or repository path in the lock;
+- make network access unnecessary for `doctor`, `init`, `run`, and `restore` after installation;
+- commit `Cargo.lock` and reject unknown licenses, yanked crates, and known advisories in CI;
 - publish SHA-256 checksums and GitHub build provenance for release binaries;
-- strip before code signing, verify the final signature, and notarize the archive distributed outside Homebrew;
+- strip before code signing, verify the final signature, and notarize direct-download archives;
 - keep npm packages free of lifecycle scripts and network downloaders.
 
 ## 13. Observability
 
-Human output is concise and uses the green, amber, and red vocabulary with text labels so it does not depend on color perception.
-
-`doctor`, `init`, and `restore` accept `--json` on stdout because they do not stream a managed child. `run` instead accepts `--json-file <path>` and atomically writes a versioned result after the child group has exited. Child stdin, stdout, and stderr remain inherited and unmodified.
+`doctor`, `init`, and `restore` accept `--json` on stdout. `run` accepts `--json-file <path>` because child streams are inherited.
 
 Structured output includes:
 
-- schema version;
-- timestamp;
-- host profile, runtime-capability results, and `runSupported` status;
-- normalized measurements;
-- pressure class and reasons;
-- current swap usage and, for run results, sampled aggregate-footprint telemetry explicitly labeled non-enforcing;
-- detected tools;
-- fixed policy, guardrail coverage, and internal fan-out disclosures;
-- operation result, exit origin, and exit reason.
+- schema version and timestamp;
+- validated-host result and capability reasons;
+- repository-evidence hashes rather than absolute paths;
+- selected tool versions and adapter classifications;
+- applied serial and no-watch controls;
+- disclosed internal fan-out;
+- lock, timeout, child, cleanup, exit-origin, and exit-reason data.
 
-Agent Lowmem-generated human and structured fields never include usernames, absolute home-directory paths, environment values, or unrelated process command lines. This redaction guarantee does not apply to inherited child output, which may contain project paths, stack traces, or tool-defined diagnostics.
+It does not include a green, amber, or red health field, a pressure level, a synthetic memory budget, a sampled aggregate footprint, environment values, usernames, raw home paths, or unrelated process information.
+
+This redaction guarantee does not apply to inherited child output, which may contain project paths, stack traces, or tool-defined diagnostics.
 
 ## 14. Testing strategy
 
-The implementation plan must preserve a low-resource Rust test suite. Repository validation runs sequentially with `cargo test -- --test-threads=1`; formatting, linting, tests, security checks, and release builds run as separate operations rather than concurrently.
+Repository validation runs sequentially. Formatting, linting, unit tests, integration tests, security checks, and release builds are separate commands; tests use one worker.
 
 ### Unit tests
 
-- native macOS snapshot normalization and public pressure-constant mapping;
-- direct green, amber, red, warning-streak, immediate-critical, and unavailable-measurement boundaries;
-- macOS-major, hardware, memory, page-size, and runtime-capability profile checks;
-- observation-only versus validated-run decisions;
-- fixed Node guardrail construction, existing-option parsing, conflict rejection, and value redaction;
-- sampled process-group footprint aggregation and limitation metadata;
-- package-manager and tool detection;
-- adapter version mappings;
-- launch-plan construction;
-- semantic Markdown canonicalization plus managed-block insertion, replacement, conflicts, and restoration;
-- stale and live lock decisions;
-- signal, pressure, timeout, recursion, and panic cleanup state machines;
-- redaction and JSON schema behavior;
-- enforcement of the first-party `unsafe` prohibition.
+- exact validated-host matching, including rejection of M2 Pro/Max prefix matches;
+- observation-only and unsupported-host behavior;
+- package-manager, workspace, tool-version, and script-form inspection;
+- lifecycle re-inspection and post-lock evidence-change handling;
+- adapter version matrices and exact forwarded arguments;
+- watch, background, compound-script, and unsupported-orchestrator rejection;
+- proof that inherited `NODE_OPTIONS` is unchanged;
+- launch-plan explanations and fan-out classification;
+- exact-byte managed-block insertion, replacement, conflict, and forced removal;
+- live and stale lock decisions;
+- signal, timeout, nested invocation, and panic cleanup state machines;
+- stable result-line, redaction, and structured-output behavior;
+- compile-time first-party `unsafe` prohibition.
 
 ### Integration tests
 
-- fixture repositories for npm, pnpm, single packages, and monorepos;
-- unambiguous and ambiguous workspace selection plus exact pnpm filtering;
-- lifecycle phase detection and rejection of unsafe background/watch patterns;
-- version-matrix fixtures proving exact serial strategies for Vitest and Jest;
-- unsupported tool versions refusing execution instead of guessing flags;
-- Next.js fixtures proving explicit uncontrolled-fan-out and partial-heap-coverage disclosures;
-- NestJS and generic Node fixture builds under the fixed policy;
-- lock contention between two processes;
-- nested package-script invocation returning a distinct recursion reason;
+- npm, pnpm, single-package, and monorepo fixtures;
+- exact npm workspace and pnpm filter selection;
+- safe lifecycle drift accepted and unsafe lifecycle drift rejected;
+- a manifest change between planning and lock recheck returning 75 with no child;
+- supported and unsupported Vitest/Jest version fixtures;
+- Next.js and NestJS disclosure behavior without false single-worker claims;
+- nested invocation and two-process lock contention;
 - inherited TTY stdio without captured-pipe deadlock;
-- `SIGINT`, `SIGTERM`, and `SIGHUP` forwarding to the managed group;
-- parent re-signaling after external signals and shell-visible Ctrl-C status 130;
-- managed child cleanup after simulated warning, critical pressure, timeout, and Rust panic;
-- termination without signaling an unrelated sentinel process;
-- exact child exit-code preservation plus child-signal, supervisor-pressure, supervisor-timeout, and external-signal disambiguation;
-- atomic `--json-file` output separated from child streams;
-- green preflight and final pre-launch pressure recheck using injected snapshots;
-- interrupted atomic writes, versioned marker upgrades, fresh-clone restore, and restoration conflicts;
-- portable npm root-package installation with platform-specific optional dependencies.
+- exact environment preservation;
+- `SIGINT`, `SIGTERM`, and `SIGHUP` forwarding;
+- timeout escalation from `SIGTERM` to owned-group `SIGKILL`;
+- an escaped-process fixture proving that output states the ownership limitation rather than claiming cleanup;
+- normal child exit, child signal, timeout, external signal, and internal failure disambiguation;
+- atomic JSON output separate from child streams;
+- interrupted file writes, marker upgrades, fresh-clone restore, conflicts, and forced-block restore;
+- portable npm installation with platform-specific optional dependencies.
 
 ### End-to-end tests
 
-One macOS Apple M2 8 GB workflow validates `doctor`, `init`, a focused test run, a small build, Ctrl-C cleanup, structured result output, and `restore`. Heavy pressure is simulated through injected snapshots; the automated test suite must not intentionally exhaust host memory.
+The reference `Mac14,15` M2 8 GiB host validates `doctor`, `init --dry-run`, `init`, one focused test, one typecheck, one small build, Ctrl-C cleanup, timeout cleanup, structured output, and restore.
 
-Packaging workflows install the root npm package on macOS arm64, macOS x64, Linux, and Windows. Installation must succeed everywhere; execution succeeds only on supported macOS arm64 and returns a clear unsupported-platform error elsewhere.
-
-The project's own tests run sequentially by default so Agent Lowmem follows the policy it publishes.
+Tests never intentionally exhaust memory. The Swift pressure campaign is a separate observational experiment and is not part of the product test suite.
 
 ### Resource budgets
 
-On the reference M2 8 GB Mac, the release build must satisfy all of these budgets:
+On the reference host, the release build must satisfy:
 
-- `doctor` parent-process peak resident memory at or below 24 MiB;
-- median `doctor` wall time at or below 250 ms over 20 consecutive runs;
-- stripped `aarch64-apple-darwin` executable at or below 12 MiB;
-- npm-launcher plus native-process aggregate peak resident memory at or below 80 MiB;
-- no background process or owned child remaining after command completion.
+- parent-process peak resident memory at or below 24 MiB for `doctor` and `run` supervision;
+- stripped `aarch64-apple-darwin` binary at or below 12 MiB;
+- npm-launcher plus native-process aggregate peak resident memory at or below 80 MiB before the repository child starts;
+- median `doctor` time at or below 100 ms outside a repository over 20 warm-cache runs;
+- median `doctor` time at or below 300 ms and p95 at or below 500 ms in a committed single-package reference fixture over 20 warm-cache runs;
+- no more than 2 seconds of parent CPU time while supervising `/bin/sleep 1800`;
+- no daemon, probe, lock owner, or member of the original owned process group remaining after normal completion, timeout cleanup, or handled external interruption.
 
-The `doctor` wall-time and memory measurements include native host inspection and repository discovery. `doctor` has no cache, does not wait for a second sample, and does not spawn `git` or monitoring utilities. Results are recorded with release artifacts. A budget regression blocks release unless this design is revised explicitly.
+Cold-cache repository discovery is measured and published but is not compared with the warm-cache gate. Resource measurements run on AC power with the macOS version, fixture commit, toolchain, and measurement command recorded.
 
 ## 15. Acceptance criteria
 
-Version 1 is ready when all of the following are true:
+Version 1 is ready only when:
 
-1. On the reference Apple M2 8 GB Mac, `doctor` reads native pressure and produces a deterministic, explained classification.
-2. Green, amber, and red map only to the kernel's normal, warning, and critical states; no cache, derivative, or calibration artifact affects the result.
-3. Missing or unknown mandatory measurements return code 69 and never masquerade as a healthy or unhealthy state.
-4. `doctor` works outside Git and on unvalidated macOS arm64 profiles in observation-only mode with `runSupported: false`.
-5. The validated run profile matches macOS major 26 while accepting minor and patch updates only after runtime-capability probes pass.
-6. Amber or red preflight and a nonvalidated run profile do not start a child process.
-7. The first monitor sample reporting kernel critical pressure triggers protection; two consecutive warning samples trigger protection within 500 ms plus scheduling tolerance.
-8. Sampled aggregate footprint is reported with its interval and accounting limitations and never presented or enforced as a hard cap.
-9. `init --dry-run` shows the exact proposed files and `init` produces the same deterministic content.
-10. Repeated same-version `init` calls produce no duplicate block or unrelated diff; formatter-only Markdown reflow does not prevent update or restore.
-11. Monorepo execution requires an unambiguous workspace and uses the exact configured npm workspace or pnpm filter.
-12. A supported Vitest or Jest script runs with one worker and no watch mode; a version without proven serialization returns code 64.
-13. A detected Next.js build is pressure-supervised while output explicitly states that internal fan-out is uncontrolled and heap-guardrail coverage may be partial.
-14. The fixed 1,024 MiB Node guardrail preserves non-conflicting `NODE_OPTIONS`; conflicting or unparsable heap options return code 2 without exposing their values.
-15. Two simultaneous managed heavy commands cannot start, and nested invocation returns code 73 with reason `nested-invocation`.
-16. Pressure protection returns 75, timeout returns 124, a natural child signal uses `128 + signal`, and Ctrl-C cleans up before the parent re-signals itself so the shell observes 130.
-17. Pressure, timeout, forwarded signals, and a simulated Rust panic clean up only the proven owned process group and lock.
-18. A normal child failure preserves inherited output and its exact exit code; structured output records its origin.
-19. `run --json-file` never mixes Agent Lowmem JSON into child stdout or stderr.
-20. `restore --dry-run` previews reversal; restore remains available on an unsupported host, preserves unrelated `AGENTS.md` content, and safely handles a valid marker after a fresh clone.
-21. Agent Lowmem performs no network request and leaves no background process after each command.
-22. All first-party crates reject `unsafe` code at compile time, unit/integration/end-to-end tests run sequentially, and dependency-policy checks pass.
-23. The native release binary and npm invocation satisfy their separate documented memory, startup, size, and cleanup budgets on the reference Mac.
-24. The signed binary is identical across Homebrew, GitHub Release, and the macOS npm package; installing the portable npm root package remains non-failing on Linux, Windows, and Intel macOS.
+1. `doctor` matches only the exact `Mac14,15`, `Apple M2`, 8 GiB, 16 KiB-page, macOS 26 profile and reports all others as unvalidated.
+2. Production code neither reads `kern.memorystatus_vm_pressure_level` nor claims current memory health.
+3. Production code never adds, removes, parses for enforcement, or rewrites a Node heap limit.
+4. `init --dry-run` displays exact changes and repeated `init` is byte-for-byte idempotent.
+5. A formatter-modified managed block conflicts normally and can be removed only through the narrow forced-block path without altering surrounding text.
+6. Configuration contains only allowlisted operations and stable workspace selectors; lifecycle data comes from fresh repository evidence.
+7. A relevant manifest change after lock acquisition returns 75, releases the lock, and starts no child.
+8. Supported Vitest and Jest versions run without watch mode and with one worker; unknown versions return 64.
+9. Next.js and NestJS never receive a false single-worker claim and display CI guidance when internal fan-out is uncontrolled.
+10. The child receives inherited `NODE_OPTIONS` unchanged.
+11. Two managed heavy operations cannot run concurrently and nested invocation returns 73.
+12. The 80% warning is emitted once; timeout returns 124 after signaling only the owned process group.
+13. External signals are forwarded and the parent re-signals itself after cleanup.
+14. A normal child failure preserves its output and exact code; the stable result line and JSON distinguish origin.
+15. An escaped descendant is never claimed as cleaned up or targeted through process-name scanning.
+16. `restore` works on unsupported hosts, preserves unrelated content, and implements ordinary and forced-block behavior exactly.
+17. All first-party production crates reject `unsafe`, production commands make no network request, and no production package contains the Swift probe.
+18. Unit, integration, end-to-end, dependency-policy, and release checks pass sequentially.
+19. Native and npm-launcher resource budgets pass on the recorded reference fixture and host.
+20. Homebrew, GitHub Release, and the macOS npm platform package contain the same signed native binary; portable npm installation remains non-failing on unsupported platforms.
 
 ## 16. Distribution and compatibility
 
-Version 1 is an MIT-licensed Rust binary for `aarch64-apple-darwin`. Homebrew, GitHub Release, and Cargo installations execute it without Node.js. The project-local npm distribution uses Node.js only for its small portable launcher; Node.js, npm, and pnpm are otherwise inspected as properties of the repository being optimized.
+Version 1 is an MIT-licensed Rust binary for `aarch64-apple-darwin`. Homebrew, GitHub Release, and Cargo installation execute the production CLI without Node.js or Swift. The project-local npm route uses Node.js only for a minimal portable launcher.
 
-The primary installation path is Homebrew:
+The primary installation path is:
 
 ```text
 brew install pleo2/tap/agent-lowmem
+agent-lowmem init --dry-run
 agent-lowmem init
 ```
 
-GitHub Releases publishes a notarized archive. Release order is fixed: compile, test, strip, Developer ID sign, signature verification, notarization, SHA-256 checksum, and build provenance. Nothing mutates the binary after signing.
+GitHub Releases publish a notarized archive. The fixed release order is compile, test, strip, Developer ID sign, signature verification, notarization, checksum, and provenance. Nothing mutates the binary after signing.
 
-For project-local installation, the portable `agent-lowmem` root package has no `os` or `cpu` restriction and declares platform packages such as `@agent-lowmem/darwin-arm64` as optional dependencies. The platform package contains the same signed native binary as GitHub Releases and declares its own operating-system and CPU restriction.
+The portable `agent-lowmem` npm root package has no `os` or `cpu` restriction and declares platform packages such as `@agent-lowmem/darwin-arm64` as optional dependencies. The platform package contains the same signed binary and declares its operating-system and CPU restriction.
 
-The root package includes a minimal JavaScript launcher that resolves the installed optional platform package, starts its binary with inherited stdio, and returns the exact child status. It never downloads an executable, runs a lifecycle hook, or falls back to building native code during installation. Unsupported platforms install successfully and receive a clear error only if they try to execute the unsupported v1 CLI. The npm route therefore has temporary launcher overhead; packaging tests measure and publish native-only and combined peak memory separately.
-
-```text
-pnpm add -D agent-lowmem
-pnpm exec agent-lowmem init
-```
-
-Equivalent npm installation is supported. Building from source with Cargo is documented for contributors but is not the default installation path.
+The launcher resolves the installed platform package, starts its binary with inherited stdio, and returns the child status. It never downloads a binary, runs a lifecycle hook, or builds native code during installation. Unsupported platforms install successfully and receive a clear error only when execution is attempted.
 
 ## 17. Documentation deliverables
 
 The first release includes:
 
-- a concise README centered on the 8 GB Mac problem;
+- a concise README centered on avoiding unnecessary concurrency on an 8 GiB Mac;
 - installation and five-minute quick start;
-- explanation of green, amber, and red states;
+- the exact validated-host key and unvalidated-host behavior;
 - generated `AGENTS.md` policy example;
-- supported-tool matrix with tested versions;
-- validated-profile and observation-only behavior;
-- explanation that sampled aggregate footprint is telemetry rather than a hard memory cap;
-- Next.js internal-fan-out and partial-heap-guardrail limitations;
-- troubleshooting for OOM, pressure protection, `NODE_OPTIONS` conflict, recursion, lock contention, and unsupported flags;
-- explicit explanation that direct package-manager commands bypass enforcement;
+- supported-tool/version matrix and exact adapter flags;
+- focused-first validation examples;
+- Next.js and NestJS internal-fan-out limitations and CI guidance;
+- explicit statements that v1 has no heap cap, pressure kill, or responsiveness guarantee;
+- timeout, recursion, lock, lifecycle-drift, forced-restore, and escaped-process troubleshooting;
+- explanation that package scripts remain trusted code and direct package-manager commands bypass enforcement;
 - npm platform-support and launcher-overhead documentation;
-- security and privacy statement;
-- contribution guide requiring low-memory-safe tests;
+- security, privacy, and low-resource contribution guidance;
 - website copy for `agentlowmem.dev` using the approved name and tagline.
 
-## 18. Deferred roadmap
+## 18. Pressure research and deferred roadmap
 
-The following require separate specifications after v1 evidence exists:
+The observational Swift probe and its protocol remain useful, but they no longer block the deterministic v1 design. Their purpose is to decide whether a later design may promote public Dispatch pressure events from research evidence into production behavior.
 
-- Linux and Intel Mac support;
-- validated M1, M3, M4, additional memory-size profiles, and later macOS major versions;
+The pressure experiment must complete its documented baseline, workload, timing, and information-sufficiency gates. Raw traces remain local and ignored. Only an aggregate report may be committed after privacy review.
+
+A future pressure feature requires all of the following:
+
+1. prospective evidence on the exact validated host and macOS build;
+2. a stated Outcome A, B, or C from the experiment protocol;
+3. no private pressure sysctl in the production contract;
+4. a new spec revision defining whether events are informational or enforcing;
+5. a narrow audited Rust macOS integration and new resource budgets;
+6. separate exit-origin and cleanup tests.
+
+Other deferred work includes:
+
+- an evidence-backed Node heap policy based on workload fixtures rather than a universal constant;
+- Linux, Intel Mac, and other Apple Silicon or memory profiles;
 - Python, Rust, Java, Flutter, and container adapters;
-- controlled compressor/swap derivatives with a bootstrap collector, run-grouped holdout validation, and an explicit no-ship failure branch;
-- a dedicated first-party platform crate if future Mach or Dispatch FFI requires narrowly reviewed `unsafe` code;
-- higher-frequency process accounting, quantified sampling error, and any evidence-backed enforcement stronger than observation;
-- multiple named policy profiles and a human-authorized mechanism for safety-weakening overrides;
+- quantified process-tree accounting and any future budget enforcement;
 - CI recommendation generation;
-- interactive dashboard or menu-bar status;
-- historical measurements and adaptive per-project guardrails;
+- interactive dashboards or menu-bar status;
+- historical measurements and adaptive per-project policies;
 - compatibility blocks for agent formats other than `AGENTS.md`;
 - an installable Codex skill layered on top of the stable CLI contract.
 
-The CLI remains the enforcement layer. Future skills teach agents how to use it but do not duplicate resource-control logic.
+The CLI remains the enforcement layer. Future skills teach agents to use it; they do not duplicate process-control logic.
 
-## 19. Brand decision
+## 19. Revision 4 decision record
 
-The canonical brand is **Agent Lowmem**. The product name emphasizes a precise developer problem and the v1 messaging emphasizes capability rather than reduced intelligence.
+| Rev 3 issue | Rev 4 decision |
+| --- | --- |
+| Pressure timing was unproven | Pressure no longer gates or terminates v1 runs |
+| The polled pressure sysctl is private | Production v1 does not read it; research labels it private |
+| Public Dispatch events require a queue and are edge-oriented | Dispatch stays in the Swift experiment until evidence and a Rust integration spec exist |
+| The 1,024 MiB heap value lacked evidence | The reference Node v24.14.1 reported a 2,240 MiB heap limit, so 1,024 MiB would halve that current default without proving safety; all automatic heap mutation is removed |
+| `NODE_OPTIONS` conflicts and script-local overrides were ambiguous | The inherited environment is preserved unchanged |
+| Two warning samples could kill a long build in 500 ms | Warning-streak termination is removed |
+| Pressure preflight and mid-run termination shared code 75 | Pressure exits are removed; 75 now means only launch evidence changed |
+| M2 prefix matching could accept M2 Pro or Max | Model and CPU brand use exact equality |
+| Lifecycle changes forced re-init | Lifecycle scripts are fresh run-time evidence and safe drift is reconciled |
+| Process-group escape was omitted | It is an explicit non-goal, test fixture, and output limitation |
+| Long-run supervisor cost was unspecified | A 30-minute CPU budget and no-process-enumeration rule are release gates |
+| Markdown semantic hashing added a parser and upgrade risk | Exact body bytes are hashed; forced block removal is explicit |
+| `doctor` timing had no fixture conditions | Host-only and repository-fixture warm-cache budgets are separate |
+| Post-lock evidence failure was undefined | It releases the lock, launches nothing, and returns 75 |
+| A TTY override was proposed as an agent-proof boundary | V1 has no safety-weakening override because a PTY is not an authority boundary |
+| Swift looked like a production-stack change | Swift is research-only; production and distribution remain Rust |
+
+## 20. Brand decision
+
+The canonical brand is **Agent Lowmem**. The product name emphasizes a precise developer problem and the messaging emphasizes capability rather than reduced intelligence.
 
 Canonical identifiers:
 
@@ -674,18 +678,18 @@ Canonical identifiers:
 - executable: `agent-lowmem`;
 - tagline: `More agents. Less RAM.`
 
-The spelling `lowmem` is mandatory. The variants `lowmen`, `agent-lowmen`, and `agentlowmen` are incorrect and must not appear in product assets, package metadata, or domains.
+The spelling `lowmem` is mandatory. `lowmen`, `agent-lowmen`, and `agentlowmen` are incorrect.
 
-## 20. Authoritative references
+## 21. Authoritative references
 
-- [Apple XNU memorystatus notifications](https://github.com/apple-oss-distributions/xnu/blob/main/doc/vm/memorystatus_notify.md) for kernel pressure states, available-memory accounting, and hysteresis.
-- [Apple dispatch memory-pressure source](https://developer.apple.com/documentation/dispatch/dispatch_source_type_memorypressure) for the public normal, warning, and critical event model.
-- [`sysctl` crate](https://docs.rs/sysctl/latest/sysctl/) for the reviewed safe named-kernel-value boundary.
-- [`libproc::processes::ProcFilter`](https://docs.rs/libproc/latest/libproc/processes/enum.ProcFilter.html) and [`RUsageInfoV4`](https://docs.rs/libproc/latest/libproc/pid_rusage/struct.RUsageInfoV4.html) for process-group enumeration and sampled physical footprint.
-- [`rustix::process`](https://docs.rs/rustix/latest/rustix/process/) for safe process-group creation, validation, waiting, and signaling.
-- [Next.js build worker source](https://github.com/vercel/next.js/blob/canary/packages/next/src/build/index.ts) and [worker implementation](https://github.com/vercel/next.js/blob/canary/packages/next/src/lib/worker.ts) for version-sensitive fan-out and inherited heap-limit behavior.
-- [Node.js command-line options](https://nodejs.org/api/cli.html#node_optionsoptions) for `NODE_OPTIONS` handling.
-- [Rust Reference: destructors](https://doc.rust-lang.org/reference/destructors.html) for the cleanup consequences of aborting without unwind.
-- [Rust `Command`](https://doc.rust-lang.org/std/process/struct.Command.html) for inherited stdio behavior.
-- [npm `package.json`](https://docs.npmjs.com/files/package.json/) for `os`, `cpu`, and optional dependency semantics.
+- [Apple Dispatch memory-pressure source](https://developer.apple.com/documentation/dispatch/dispatch_source_type_memorypressure) for the public event interface.
+- [Apple Dispatch memory-pressure events](https://developer.apple.com/documentation/dispatch/dispatchsource/memorypressureevent) for normal, warning, and critical transition semantics.
+- [Agent Lowmem pressure-signal experiment](../../experiments/2026-09-02-pressure-signal-protocol.md) for the observational evidence gate.
+- [Rust `Command`](https://doc.rust-lang.org/std/process/struct.Command.html) for child execution and inherited stdio.
+- [Rust Unix `CommandExt`](https://doc.rust-lang.org/std/os/unix/process/trait.CommandExt.html) for Unix child-process configuration.
+- [Node.js command-line options](https://nodejs.org/api/cli.html#node_optionsoptions) for inherited `NODE_OPTIONS` behavior.
+- [npm scripts](https://docs.npmjs.com/cli/using-npm/scripts) for package-manager shell and lifecycle semantics.
+- [pnpm CLI](https://pnpm.io/cli/run) for script forwarding and workspace filters.
+- [Vitest CLI](https://vitest.dev/guide/cli) for public run, watch, file-parallelism, and worker controls.
+- [Jest CLI](https://jestjs.io/docs/cli) for public `--runInBand` and watch controls.
 - [Apple notarization workflow](https://developer.apple.com/documentation/security/notarizing-macos-software-before-distribution) for direct-download release handling.

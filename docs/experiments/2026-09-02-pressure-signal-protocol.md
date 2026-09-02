@@ -1,6 +1,6 @@
 # Agent Lowmem Pressure-Signal Experiment
 
-**Status:** Approved measurement gate before design Revision 4
+**Status:** Approved observational campaign for a future pressure feature
 
 **Reference host:** Apple M2, 8 GiB unified memory, 16 KiB pages, macOS 26.x
 
@@ -10,7 +10,7 @@
 
 Does the public macOS Dispatch memory-pressure signal reach a user-space supervisor early and consistently enough to help preserve interactivity during real JavaScript and TypeScript workloads on the reference Mac?
 
-This experiment does not choose a production threshold in advance and does not validate the 1,024 MiB Node heap guardrail. Revision 4 will remove that unverified guardrail independently of the pressure result.
+This experiment does not choose a production threshold in advance and cannot validate a Node heap guardrail. Design Revision 4 removed both automatic heap mutation and pressure-based enforcement from v1 independently of the experiment result.
 
 ## Safety boundary
 
@@ -147,36 +147,36 @@ Twenty completed runs are necessary but not automatically sufficient. The campai
 
 If the 20 runs stay entirely normal, the result is **inconclusive**, not successful. Continue passive measurement during ordinary heavy work; do not manufacture pressure.
 
-## Revision 4 decision gate
+## Future pressure-feature decision gate
 
 ### Outcome A — actionable warning signal
 
 Choose this only if every degradation-positive informative run receives a Dispatch warning before objective degradation, the smallest observed warning lead is at least two seconds, and warning episodes in non-degraded runs can be separated by one fixed sustained-duration rule.
 
-Revision 4 then:
+A future design revision may then:
 
-- uses the public Dispatch source for in-run events;
-- uses the private sysctl only for the explicitly compatibility-sensitive initial snapshot;
-- fixes one sustained-warning duration from this campaign rather than learning it at runtime;
-- retains immediate critical reaction as an emergency best-effort path;
-- documents the tested macOS build and observed lead-time distribution.
+- use the public Dispatch source for in-run events;
+- omit pressure preflight unless a separate public current-state interface and its timing are validated;
+- fix one sustained-warning duration from this campaign rather than learning it at runtime;
+- retain immediate critical reaction as an emergency best-effort path;
+- document the tested macOS build and observed lead-time distribution.
 
 ### Outcome B — late or ambiguous warning
 
 Choose this if warning overlaps or follows degradation, false-positive warning episodes cannot be separated cleanly, or only critical pressure distinguishes unsafe runs.
 
-Revision 4 then:
+A future design revision may then:
 
-- leads with serialization, no-watch, one-worker support, focused validation, and timeouts;
-- treats warning as informational;
-- may retain critical termination only as best-effort emergency protection;
-- does not claim that pressure monitoring prevents the Mac from becoming unresponsive.
+- lead with serialization, no-watch, one-worker support, focused validation, and timeouts;
+- treat warning as informational;
+- retain critical termination only as best-effort emergency protection;
+- avoid claiming that pressure monitoring prevents the Mac from becoming unresponsive.
 
 ### Outcome C — no useful separation
 
 Choose this if degraded runs occur before both warning and critical events, or pressure behavior is inconsistent enough that it cannot support a stable policy.
 
-Revision 4 then removes preventive pressure termination from the v1 promise. Any future swap/compressor derivative begins as observation-only and requires its own prospective evidence before enforcement.
+Preventive pressure termination remains outside the v1 promise. Any future swap/compressor derivative begins as observation-only and requires its own prospective evidence before enforcement.
 
 ## Claims this experiment cannot support
 
@@ -198,6 +198,6 @@ Commit only an aggregate report containing:
 - warning and critical lead-time distributions for informative runs;
 - false-positive episode summary;
 - selected Outcome A, B, or C with exceptions;
-- exact resulting Revision 4 changes.
+- exact proposed changes for the future pressure-feature design revision.
 
 Raw JSONL remains local and ignored unless the owner explicitly reviews and authorizes sharing it.

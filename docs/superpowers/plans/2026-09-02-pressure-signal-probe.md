@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Build a non-enforcing macOS diagnostic probe and a reproducible 20-run protocol that determine whether native memory-pressure events arrive early enough to support Agent Lowmem v1.
+**Goal:** Build a non-enforcing macOS diagnostic probe and a reproducible 20-run protocol that determine whether native memory-pressure events arrive early enough to justify a future Agent Lowmem pressure feature.
 
-**Architecture:** A dependency-free Swift package wraps one real build or test command, inherits its terminal streams, and records JSON Lines from a single serial Dispatch queue. It observes both the public Dispatch memory-pressure event source and the private current-level sysctl, samples scheduler delay and swap every 250 ms, and measures the launched process tree once per second. It never terminates the workload because of pressure and it never changes the Rev 3 policy.
+**Architecture:** A Swift package with no third-party package dependencies wraps one real build or test command, inherits its terminal streams, and records JSON Lines from a single serial Dispatch queue. It observes both the public Dispatch memory-pressure event source and the private current-level sysctl, samples scheduler delay and swap every 250 ms, and measures the launched process tree once per second. It never terminates the workload because of pressure and never changes production policy.
 
 **Tech Stack:** Swift 6.3, Swift Package Manager, Foundation, Dispatch, Darwin `sysctlbyname`, and libproc.
 
@@ -20,7 +20,7 @@
 - The output path is created with exclusive-create semantics and mode `0600`; an existing trace is never overwritten.
 - Builds and tests use one job and tests run without parallel execution.
 - Raw JSONL evidence stays untracked; only the protocol and an eventual aggregate decision may be committed.
-- Rev 4 remains blocked until the campaign produces enough qualifying runs.
+- Pressure-based production behavior remains blocked until the campaign produces enough qualifying runs and a later design revision approves it; the deterministic v1 design is not blocked.
 
 **Execution environment note:** The active Apple Command Line Tools installation contains neither `Testing` nor `XCTest` in SwiftPM's import paths. The implementation therefore uses two dependency-free executable test harnesses that exercise public APIs and return nonzero on failure: `pressure-probe-core-tests` and `pressure-probe-macos-tests`. This preserves the RED/GREEN cycles without pinning a private SDK framework path.
 
@@ -355,7 +355,7 @@ git commit -m "feat: record pressure during real workloads"
 
 **Interfaces:**
 - Consumes: executable and JSONL schema from Task 4.
-- Produces: exact collection procedure, run-quality rules, evidence table, and Rev 4 branching decision.
+- Produces: exact collection procedure, run-quality rules, evidence table, and future pressure-feature decision.
 
 - [ ] **Step 1: Document build and invocation commands**
 
@@ -369,13 +369,13 @@ Collect at least 20 completed real workloads, at least five repetitions per avai
 
 A run qualifies only when it has `session_start`, `child_start`, at least four samples, `child_exit`, and `session_end`; no measurement error occurred; and the workload/conditions ledger is complete. Interrupted traces remain useful for diagnosis but do not count toward the 20 completed runs.
 
-- [ ] **Step 4: Define the Rev 4 decision table**
+- [ ] **Step 4: Define the future pressure-feature decision table**
 
 Use three outcomes:
 
-1. Dispatch warning consistently precedes objective scheduler degradation: make Dispatch the in-run trigger and choose a sustained-warning window from the observed distribution.
-2. Warning overlaps or follows degradation but critical still separates unsafe runs: lead with deterministic controls, keep critical termination best-effort, and make warning informational until more evidence exists.
-3. Neither warning nor critical separates unsafe runs in time: remove preventive pressure termination from the v1 promise; any future swap derivative begins as observation-only.
+1. Dispatch warning consistently precedes objective scheduler degradation: a later design may make Dispatch an in-run trigger and choose a sustained-warning window from the observed distribution.
+2. Warning overlaps or follows degradation but critical still separates unsafe runs: a later design may keep warning informational and evaluate critical termination as best-effort.
+3. Neither warning nor critical separates unsafe runs in time: preventive pressure termination remains outside the product; any future swap derivative begins as observation-only.
 
 No branch may infer a threshold from successful runs alone or claim that absence of a pressure event proves safety.
 
