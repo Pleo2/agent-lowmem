@@ -231,7 +231,7 @@ mod tests {
     #[test]
     fn schema_reason_vocabulary_matches_rust_in_order() {
         let schema_path =
-            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../schemas/result-v1.schema.json");
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("schemas/result-v1.schema.json");
         let schema: serde_json::Value =
             serde_json::from_str(&fs::read_to_string(schema_path).unwrap()).unwrap();
 
