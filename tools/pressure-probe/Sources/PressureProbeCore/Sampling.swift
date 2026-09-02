@@ -60,7 +60,7 @@ public struct SamplePayload: Codable, Equatable, Sendable {
     }
 }
 
-public struct RunSummary: Equatable, Sendable {
+public struct RunSummary: Codable, Equatable, Sendable {
     public private(set) var sampleCount = 0
     public private(set) var warningSampleCount = 0
     public private(set) var criticalSampleCount = 0

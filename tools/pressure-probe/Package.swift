@@ -16,6 +16,10 @@ let package = Package(
             name: "pressure-probe-macos-tests",
             targets: ["PressureProbeMacOSTests"]
         ),
+        .executable(
+            name: "agent-lowmem-pressure-probe",
+            targets: ["agent-lowmem-pressure-probe"]
+        ),
     ],
     targets: [
         .target(name: "PressureProbeCore"),
@@ -32,6 +36,10 @@ let package = Package(
             name: "PressureProbeMacOSTests",
             dependencies: ["PressureProbeCore", "PressureProbeMacOS"],
             path: "Tests/PressureProbeMacOSTests"
+        ),
+        .executableTarget(
+            name: "agent-lowmem-pressure-probe",
+            dependencies: ["PressureProbeCore", "PressureProbeMacOS"]
         ),
     ]
 )
