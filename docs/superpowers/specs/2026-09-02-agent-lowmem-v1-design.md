@@ -1,10 +1,10 @@
 # Agent Lowmem v1 Design
 
-**Status:** Candidate for final external review
+**Status:** Candidate for final implementation review
 
 **Date:** 2026-09-02
 
-**Revision:** 5 — practical script compatibility
+**Revision:** 6 — bounded implementation contract
 
 **Product:** Agent Lowmem
 
@@ -58,7 +58,7 @@ Version 1 must:
 
 1. Detect a supported macOS arm64 runtime and separately identify whether the host matches the validated performance-reference profile.
 2. Generate an idempotent, clearly delimited Agent Lowmem block in the Git root's `AGENTS.md`.
-3. Detect npm or pnpm, configured workspaces, supported scripts, and supported tool versions from repository evidence without executing repository code during inspection.
+3. Detect npm or pnpm, configured workspaces, supported scripts, and supported tool versions from repository evidence without starting Node.js, a package manager, a repository executable, or repository code during inspection.
 4. Run one Agent Lowmem-managed heavy operation at a time across the local user session.
 5. Reject watch mode, recognized background execution, nested Agent Lowmem invocation, and unsupported concurrency controls.
 6. Apply one-worker or serial flags only through a version-tested public interface.
@@ -161,6 +161,8 @@ It reports:
 
 `doctor` does not report a current memory-health color and does not read the private pressure-level sysctl. A capability-compatible macOS arm64 host reports `runSupported: true`; a host outside the reference profile also reports `performanceValidated: false` and the mismatched profile fields. Outside a repository, host inspection still succeeds while repository operations are unavailable.
 
+`doctor` starts no child process. Repository inspection for `doctor`, `init`, `init --dry-run`, and the pre-lock and post-lock phases of `run` is data-only: it does not start `node`, npm, pnpm, Git, a package binary, or a repository script. Only `run`, after acquiring the lock and successfully rechecking evidence, may start the selected package manager.
+
 ### `agent-lowmem init`
 
 Creates or updates repository policy.
@@ -201,7 +203,7 @@ agent-lowmem run build --json-file .agent-lowmem-result.json
 
 Only operations present in `.agent-lowmem.json` and scripts present in the selected `package.json` may run. `--workspace <key>` must match a stable configured key. Arbitrary shell commands are outside v1. Extra arguments are forwarded as argument-array elements without shell interpolation by Agent Lowmem.
 
-The trust boundary is explicit: Agent Lowmem starts npm or pnpm without constructing a shell string, but those package managers execute package scripts using their documented shell semantics. Agent Lowmem is not a sandbox for repository code.
+The trust boundary is explicit: Agent Lowmem starts npm or pnpm without constructing a shell string, but those package managers execute package scripts using their documented shell semantics. The package-manager argument array pins the script shell to `/bin/sh` and disables pnpm's shell emulator for the managed invocation. Agent Lowmem is not a sandbox for repository code.
 
 `run` requires a supported macOS arm64 runtime. On a host outside the reference profile, it prints one stable unvalidated-performance notice before lock acquisition; the notice is informational and does not require an override. The command then acquires the global lock, revalidates the relevant manifests and scripts, and releases the lock without starting a child if evidence changed during launch planning. Child stdin, stdout, and stderr are inherited. Agent Lowmem JSON is therefore available only through `--json-file <path>`.
 
@@ -284,15 +286,22 @@ The inspector:
 - locates the Git root and root `AGENTS.md` without executing `git`;
 - parses root and selected-workspace `package.json` files as data;
 - identifies npm or pnpm from `packageManager` plus the matching lockfile;
-- enumerates declared workspaces and requires an explicit stable key;
+- enumerates declared workspaces and requires an explicit stable key whose configured path and package name identify exactly one workspace;
 - resolves a supported tool or wrapper's installed `package.json` without executing that package;
 - compares its exact semantic version with the committed adapter matrix;
 - reads the selected target plus its `pre<name>` and `post<name>` lifecycle scripts on every run;
-- verifies that the effective package-manager script shell uses the supported default POSIX semantics rather than a custom `script-shell` or pnpm shell emulator, and determines whether pre/post lifecycle execution is enabled;
-- tokenizes every relevant script, expands supported sequential script references for classification, and classifies every leaf segment;
+- reads only matrix-declared repository package-manager configuration files as data and rejects repository-owned custom script-shell semantics;
+- treats each declared pre/post lifecycle script as potentially reachable without querying whether machine policy will execute it;
+- tokenizes every relevant script, expands supported same-package script references within the fixed graph limits, and classifies every leaf segment;
 - returns explicit unsupported or conflict states instead of guessing.
 
-Inspection may query the detected npm or pnpm executable for normalized effective script-shell and lifecycle settings, but it never executes a repository script. It retains only default/custom and enabled/disabled states, never a configured shell path. A custom script shell, or an effective configuration that cannot be determined safely, returns unsupported code 64 with reason `script-shell-unsupported`. Disabled lifecycle execution is supported and removes pre/post phases from the reachable launch graph.
+Inspection has a zero-child-process contract. `doctor`, `init`, `init --dry-run`, launch planning, and the post-lock evidence recheck never start `node`, npm, pnpm, Git, a package binary, or any repository command. They also do not read user-level or global package-manager configuration. This keeps inspection inside the latency budget, avoids collecting machine-specific paths, and makes repository evidence reproducible.
+
+For each exact package-manager version, the adapter matrix names the repository-owned configuration files and keys that can alter script-shell semantics. The initial npm adapter parses the Git-root `.npmrc` for `script-shell`. The initial pnpm adapter parses its matrix-declared project configuration, including relevant `.npmrc` and `pnpm-workspace.yaml` keys, for `scriptShell` and `shellEmulator`. Unknown syntax, substitution, an explicit shell other than `/bin/sh`, or an enabled shell emulator returns code 64 with reason `script-shell-unsupported`. Agent Lowmem rejects an explicit repository requirement rather than silently changing that repository's intended semantics.
+
+Machine, user, global, and environment configuration cannot change the grammar used by a managed launch: the matrix-defined runtime argument array passes npm `--script-shell=/bin/sh`, and passes pnpm `--config.script-shell=/bin/sh` plus `--config.shell-emulator=false`. These options are accepted only for exact fixture-tested package-manager versions and rely on documented command-line precedence. They are command-scoped and do not modify any configuration file.
+
+Agent Lowmem neither queries nor forces npm/pnpm lifecycle-enable settings. For classification it always includes each declared `pre<name>` and `post<name>` as a potential phase. A package manager may omit a pre/post phase because of machine policy, which only removes work that was already classified; no setting can introduce an unclassified declared lifecycle phase. Terminal and structured previews label these entries `potentialLifecycle: true` until the child runs.
 
 #### 8.4.2 Classification grammar
 
@@ -337,19 +346,21 @@ Unwrapping occurs at most once per segment. A wrapper with an unknown version, m
 
 Any other leading executable is classified normally. In particular, `env`, `cross-env-shell`, `concurrently`, and parallel orchestrators are not treated as transparent wrappers.
 
-#### 8.4.4 Sequential script references
+#### 8.4.4 Bounded same-package script references
 
-`npm-run-all -s` and `run-s` are sequential script-reference orchestrators, not transparent wrappers. They are supported only when:
+V1 expands only exact same-package references through fixture-tested forms of `node --run <script>`, `npm run <script>`, and `pnpm run <script>`. The referenced name must be one exact literal key in the same `package.json`. A reference with flags, arguments, `--`, a glob, workspace selection, or forwarded outer arguments is unsupported with reason `script-reference-unsupported`.
 
-- their installed package version is present in the matrix;
-- every referenced script name is an exact literal key in the same `package.json`;
-- no glob pattern, embedded argument string, placeholder, `--continue-on-error`, mixed execution group, or forwarded outer argument is present;
-- recursive expansion reaches depth at most three and contains no cycle;
-- every expanded lifecycle and script segment is already policy-compliant without Agent Lowmem injecting a missing flag inside the nested graph.
+Expansion has three independent bounds:
 
-`npm-run-all -p`, `run-p`, `concurrently`, Turbo/Nx fan-out, and every parallel or race form are denied. Agent Lowmem leaves an accepted sequential wrapper intact for the package manager to execute; expansion exists only to prove the graph before launch.
+- the selected target is depth zero and a reference may descend through at most depth three;
+- the active expansion stack must remain cycle-free;
+- the complete reachable graph may contain at most 32 leaf-segment occurrences across the selected target, all potential pre/post phases, and every expanded reference.
 
-Exact same-package references through `node --run <script>`, `npm run <script>`, or `pnpm run <script>` are also expanded to depth three for classification. V1 accepts them only without glob selection, workspace fan-out, outer forwarded arguments, or a need for nested flag injection. Node script references do not imply npm/pnpm pre/post lifecycle execution; package-manager references do, matching their documented behavior.
+The segment budget counts occurrences, not unique script names: referencing the same safe script twice consumes its segments twice. Agent Lowmem checks the limit before admitting the thirty-third segment and returns code 64 with reason `script-graph-too-large`. A reference cycle returns `script-reference-unsupported`. These fixed limits are implementation constants, not repository configuration.
+
+Package-manager references expand their declared pre/post scripts as potential lifecycle phases; Node references do not imply npm/pnpm lifecycle execution. Every nested controlled segment and lifecycle segment must already contain its required controls because Agent Lowmem never injects flags inside the expanded graph.
+
+`npm-run-all`, `run-s`, and other sequential script orchestrators are deferred and return `script-reference-unsupported` in v1. `npm-run-all -p`, `run-p`, `concurrently`, Turbo/Nx fan-out, and every recognized parallel or race form return `parallel-denied`. This keeps the initial recursive grammar limited to three exact reference forms.
 
 #### 8.4.5 Segment classification and flag placement
 
@@ -363,7 +374,7 @@ Each leaf segment resolves to one of:
 
 A selected operation is runnable only when every reachable leaf segment is controlled, disclosed, or auxiliary and the selected target script contains at least one controlled or disclosed segment. Multiple controlled or disclosed segments are allowed because `&&` keeps them sequential.
 
-npm and pnpm append forwarded arguments to the end of the selected script. Therefore Agent Lowmem may inject missing adapter flags only into the final top-level segment, after unwrapping `cross-env` or `dotenv`, and only when that leaf is not hidden behind a sequential script-reference wrapper. Every earlier controlled segment and every lifecycle segment must already contain its required controls. If a missing control would require editing a non-final or nested segment, the operation is unsupported with reason `nonfinal-injection-required`.
+npm and pnpm append forwarded arguments to the end of the selected script. Therefore Agent Lowmem may inject missing adapter flags only into the final top-level segment, after unwrapping `cross-env` or `dotenv`, and only when that leaf is not a script reference. Every earlier controlled segment and every lifecycle or nested segment must already contain its required controls. If a missing control would require editing a non-final, lifecycle, or nested segment, the operation is unsupported with reason `nonfinal-injection-required`.
 
 Forwarded user arguments after Agent Lowmem's `--` go to that same final leaf. The final adapter validates them and rejects watch, UI, parallel, or conflicting concurrency options before launch. If the final leaf has no adapter-declared forwarded-argument contract, extra arguments are unsupported rather than attached to the wrong command.
 
@@ -373,7 +384,7 @@ If no injection or forwarded argument is required, Agent Lowmem runs the origina
 
 `adapters/matrix-v1.json` is the versioned source of truth for:
 
-- package-manager identities, tested versions, launch-array templates, configuration queries, and lifecycle/forwarding semantics;
+- package-manager identities, tested versions, launch-array templates, repository-configuration files and keys, and lifecycle/forwarding semantics;
 - executable and wrapper names;
 - package identities and tested exact versions or ranges;
 - command and subcommand forms;
@@ -384,11 +395,22 @@ If no injection or forwarded argument is required, Agent Lowmem runs the origina
 
 The artifact is validated against a bundled schema in CI and embedded into the release binary. The initial matrix begins with exact versions exercised by committed fixtures. A range may widen only after every newly covered version passes the same adapter fixture suite. Runtime never approximates an unknown version to the nearest entry.
 
-The first matrix covers exact tested npm and pnpm versions plus tested forms of Vitest, Jest, the Node test runner, TypeScript `tsc`, ESLint, Next.js, NestJS, `cross-env`, `dotenv-cli`, `npm-run-all`, and a deliberately short auxiliary set. That auxiliary set includes `rimraf` only with one or more static repository-relative paths, no option token, no glob, and no `..` component, which is enough for forms such as `rimraf dist && next build`. System `rm`, `cp`, and `mv` are not accepted in the initial matrix. Adding a package manager, tool, wrapper, auxiliary command form, denial token, or version is a reviewed artifact change with fixture evidence.
+The first matrix covers exact tested npm and pnpm versions plus tested forms of Vitest, Jest, the Node test runner, TypeScript `tsc`, ESLint, Next.js, NestJS, `cross-env`, `dotenv-cli`, and a deliberately short auxiliary set. That auxiliary set includes `rimraf` only with one or more static repository-relative paths, no option token, no glob, and no `..` component, which is enough for forms such as `rimraf dist && next build`. System `rm`, `cp`, and `mv` are not accepted in the initial matrix. Adding a package manager, tool, wrapper, auxiliary command form, denial token, or version is a reviewed artifact change with fixture evidence.
+
+The initial launch templates are argument arrays, never reconstructed shell strings. Omitting the optional `-- <arguments...>` tail when it is empty, their semantic forms are:
+
+```text
+npm root:      npm --script-shell=/bin/sh run <script> [-- <arguments...>]
+npm workspace: npm --script-shell=/bin/sh --workspace=<packageName> run <script> [-- <arguments...>]
+pnpm root:      pnpm --config.script-shell=/bin/sh --config.shell-emulator=false run <script> [-- <arguments...>]
+pnpm workspace: pnpm --config.script-shell=/bin/sh --config.shell-emulator=false --filter <packageName> --fail-if-no-match run <script> [-- <arguments...>]
+```
+
+The exact option spelling, ordering, forwarding behavior, and no-match exit behavior are fixture-tested for every admitted package-manager version. No launch template changes pre/post enablement. The pnpm workspace template uses both preflight cardinality and `--fail-if-no-match`: either a stale zero-match selection or a repository change blocks success rather than allowing a no-op test command to appear green.
 
 #### 8.4.7 Lifecycle scripts and drift
 
-`init` does not freeze lifecycle contents into configuration. On every run, Agent Lowmem re-reads `pre<name>` and `post<name>` and applies the same grammar, wrapper, script-reference, and matrix rules.
+`init` does not freeze lifecycle contents into configuration. On every run, Agent Lowmem re-reads `pre<name>` and `post<name>` and applies the same grammar, wrapper, script-reference, graph-budget, and matrix rules whether or not the current package-manager policy will execute those phases.
 
 npm and pnpm do not pass the selected script's additional arguments to its pre/post phases. Consequently a lifecycle controlled segment must already include its required control flags; Agent Lowmem never claims to inject into it. Lifecycle phases may contain only accepted leaf classifications and execute inside the same owned process group and operation timeout.
 
@@ -396,18 +418,19 @@ A safe addition since the last `init` is incorporated into the current launch pl
 
 #### 8.4.8 Evidence recheck
 
-Before acquiring the lock, the launch plan records SHA-256 hashes of every repository file used for the decision: root and selected-workspace `package.json`, `.agent-lowmem.json`, the selected lockfile, repository package-manager configuration, and each resolved tool or wrapper `package.json`. It also records a non-secret fingerprint of the normalized effective script-shell and lifecycle states returned by package-manager inspection.
+Before acquiring the lock, the launch plan records SHA-256 hashes of every repository file used for the decision: root and selected-workspace `package.json`, `.agent-lowmem.json`, the selected lockfile, every matrix-declared repository package-manager configuration file that exists, workspace-declaration data, and each resolved tool or wrapper `package.json`. No user/global configuration fingerprint exists because inspection does not read those files and command-scoped launch flags neutralize their script-shell settings.
 
-After acquiring the lock, Agent Lowmem re-reads and re-hashes the same files and re-queries the normalized settings. On any difference it releases the lock, launches nothing, and returns code 75 with reason `evidence-changed`. Human output names only the repository-relative manifest, lockfile, configuration file, package identity, or normalized setting class that changed. Agent Lowmem does not retry automatically or persist cross-run counters solely to guess which external process caused the change.
+After acquiring the lock, Agent Lowmem re-reads, re-parses, and re-hashes the same repository files without starting a child. On any difference, workspace-cardinality change, or classification change it releases the lock, launches nothing, and returns code 75 with reason `evidence-changed`. Human output names only the repository-relative manifest, lockfile, configuration file, package identity, or workspace evidence class that changed. Agent Lowmem does not retry automatically or persist cross-run counters solely to guess which external process caused the change.
 
 ### 8.5 Fixed execution policy
 
 Every launch plan contains:
 
 - exactly one selected package manager and configured operation;
-- selected workspace, current lifecycle phases, and ordered classified segments;
-- an argument array rather than a shell command built by Agent Lowmem;
-- transparent-wrapper and sequential-script-reference evidence;
+- either the root package or one workspace whose configured path and package name have cardinality one;
+- potential lifecycle phases and ordered classified segments within the depth-three and 32-segment graph limits;
+- a matrix-defined package-manager argument array, including command-scoped script-shell controls, rather than a shell command built by Agent Lowmem;
+- transparent-wrapper and bounded same-package script-reference evidence;
 - existing controls plus any final-segment adapter suffix;
 - a classification of internal fan-out as controlled, disclosed, or unsupported;
 - the per-user lock requirement;
@@ -517,7 +540,7 @@ A monorepo adds stable workspace keys:
   "workspaces": {
     "web": {
       "path": "apps/web",
-      "packageManagerSelector": "@acme/web",
+      "packageName": "@acme/web",
       "operations": {
         "test": { "script": "test", "timeoutSeconds": 900 }
       }
@@ -526,7 +549,11 @@ A monorepo adds stable workspace keys:
 }
 ```
 
-The schema accepts timeouts from 60 through 3,600 seconds and rejects unknown fields, arbitrary commands, invalid operation keys, absolute workspace paths, duplicate selectors, and missing scripts. Concurrency, watch denial, lock behavior, environment preservation, retry behavior, and cleanup are fixed implementation policy rather than configurable fields.
+The key `web` is the stable Agent Lowmem CLI key; it is never passed to a package manager. `path` must be a canonical repository-relative directory with no `..` component or symlink escape. `packageName` must equal that directory's `package.json.name`, satisfy the supported npm package-name grammar, and contain no pnpm selector operator such as `...`, `^`, `*`, `!`, `[`, `]`, `{`, or `}`.
+
+Using repository manifests as data, Agent Lowmem verifies that the path is included by the supported root workspace declaration and that the exact package name identifies exactly one declared workspace at that same path. Zero matches, duplicate names, a name/path disagreement, or a package name that could be interpreted as selector syntax returns code 64 with reason `workspace-cardinality` and starts no child. Unsupported workspace-declaration syntax returns `workspace-unsupported`. Package-manager selector arguments are generated only from this validated exact name; `.agent-lowmem.json` never accepts a free-form selector.
+
+The configuration schema accepts timeouts from 60 through 3,600 seconds and rejects unknown fields, including the removed `packageManagerSelector`, arbitrary commands, invalid operation keys, absolute workspace paths, duplicate configured package names, and missing scripts. Semantic validation performs the cardinality and declaration checks that JSON Schema cannot express. Concurrency, watch denial, graph limits, lock behavior, environment preservation, retry behavior, and cleanup are fixed implementation policy rather than configurable fields.
 
 ## 10. Data flow
 
@@ -545,7 +572,7 @@ CLI request
   -> stable human result and optional atomic JSON result
 ```
 
-If the post-lock hash check fails, Agent Lowmem releases the lock and returns 75 without launching a child. `doctor`, dry-run commands, and `restore` do not acquire the heavy-operation lock.
+No stage before `managed process-group launch` starts a child process. If the post-lock hash or semantic check fails, Agent Lowmem releases the lock and returns 75 without launching the package manager. `doctor`, dry-run commands, and `restore` do not acquire the heavy-operation lock.
 
 ## 11. Errors and exit results
 
@@ -572,6 +599,67 @@ agent-lowmem: result origin=<origin> code=<code> reason=<reason>
 `origin` is one of `preflight`, `child`, `supervisor-timeout`, `external-signal`, or `internal`. `preflight` means no repository child started and covers unsupported input, lock contention, configuration conflict, or changed launch evidence. This line and the optional structured result disambiguate a natural child code that equals a reserved wrapper code. Pressure is not an exit origin in v1.
 
 A natural child signal is represented as `128 + signal`. When the user sends `SIGINT`, `SIGTERM`, or `SIGHUP` to Agent Lowmem, the parent forwards, cleans up, and re-raises the signal on itself.
+
+`reason` is a closed, ASCII, kebab-case v1 vocabulary. Each reason is valid only with the following origin and code class:
+
+| Origin and code | Permitted `reason` values |
+| --- | --- |
+| `child`, `0` | `completed` |
+| `preflight`, `2` | `invalid-cli`, `invalid-config` |
+| `preflight`, `64` | `host-unsupported`, `repository-unsupported`, `package-manager-unsupported`, `workspace-unsupported`, `workspace-cardinality`, `operation-unsupported`, `script-syntax-unsupported`, `script-shell-unsupported`, `script-reference-unsupported`, `script-graph-too-large`, `wrapper-unsupported`, `tool-unsupported`, `tool-version-unsupported`, `watch-denied`, `ui-denied`, `background-denied`, `parallel-denied`, `argument-denied`, `nonfinal-injection-required` |
+| `preflight`, `73` | `lock-held`, `nested-invocation` |
+| `preflight`, `75` | `evidence-changed` |
+| `preflight`, `78` | `managed-file-conflict` |
+| `child`, nonzero normal child code | `child-exit` |
+| `child`, `128 + signal` from a natural child signal | `child-signal` |
+| `supervisor-timeout`, `124` | `deadline-exceeded` |
+| `external-signal`, `128 + signal` | `external-signal` |
+| `internal`, `70` | `internal-error` |
+
+The committed `schemas/result-v1.schema.json` uses this exact enum:
+
+```json
+{
+  "reason": {
+    "type": "string",
+    "enum": [
+      "completed",
+      "invalid-cli",
+      "invalid-config",
+      "host-unsupported",
+      "repository-unsupported",
+      "package-manager-unsupported",
+      "workspace-unsupported",
+      "workspace-cardinality",
+      "operation-unsupported",
+      "script-syntax-unsupported",
+      "script-shell-unsupported",
+      "script-reference-unsupported",
+      "script-graph-too-large",
+      "wrapper-unsupported",
+      "tool-unsupported",
+      "tool-version-unsupported",
+      "watch-denied",
+      "ui-denied",
+      "background-denied",
+      "parallel-denied",
+      "argument-denied",
+      "nonfinal-injection-required",
+      "lock-held",
+      "nested-invocation",
+      "evidence-changed",
+      "managed-file-conflict",
+      "child-exit",
+      "child-signal",
+      "deadline-exceeded",
+      "external-signal",
+      "internal-error"
+    ]
+  }
+}
+```
+
+No runtime branch may emit a value outside this enum. Adding, removing, or renaming a reason requires a new result-schema version. Human-readable `message` and `nextAction` fields may improve without a schema-version change and must never be parsed as stable agent contracts.
 
 ## 12. Security and privacy
 
@@ -603,10 +691,11 @@ Structured output includes:
 - schema version and timestamp;
 - supported-runtime and performance-validation results with capability reasons;
 - repository-evidence hashes rather than absolute paths;
-- selected tool versions and adapter classifications;
-- applied serial and no-watch controls;
+- selected workspace key and package name, tool versions, and adapter classifications;
+- graph depth, total leaf occurrences, and potential-lifecycle labels;
+- applied script-shell, serial, and no-watch controls;
 - disclosed internal fan-out;
-- lock, timeout, child, cleanup, exit-origin, and exit-reason data.
+- lock, timeout, child, cleanup, exit-origin, and closed-enum exit-reason data.
 
 It does not include a green, amber, or red health field, a pressure level, a synthetic memory budget, a sampled aggregate footprint, environment values, usernames, raw home paths, or unrelated process information.
 
@@ -620,11 +709,13 @@ Repository validation runs sequentially. Formatting, linting, unit tests, integr
 
 - supported macOS arm64 capability checks and exact reference-profile matching;
 - unvalidated-performance notice behavior on a supported non-reference host;
-- package-manager, workspace, tool-version, and script-form inspection;
-- default versus custom script-shell detection and lifecycle-enable state;
+- package-manager, exact workspace-cardinality, tool-version, and script-form inspection;
+- data-only repository configuration parsing, custom script-shell rejection, and command-scoped launch controls;
+- proof through executable sentinels that inspection and post-lock evidence recheck start no child process;
+- conservative potential-lifecycle classification independent of lifecycle-enable configuration;
 - tokenizer quoting, `&&` segmentation, literal quoted globs, and every rejected construct from §8.4.2;
 - `cross-env` and `dotenv` unwrapping plus redaction;
-- sequential `npm-run-all` and same-package script-reference expansion, depth limits, and cycle detection;
+- same-package script-reference expansion, depth-three and 32-segment limits, occurrence counting, and cycle detection;
 - lifecycle re-inspection and post-lock evidence-change handling;
 - adapter-matrix schema, exact version matching, classifications, suffix placement, and forwarded arguments;
 - watch, UI, background, parallel, race, and unsupported-orchestrator rejection;
@@ -634,14 +725,18 @@ Repository validation runs sequentially. Formatting, linting, unit tests, integr
 - exact-byte managed-block insertion, replacement, conflict, and forced removal;
 - live and stale lock decisions;
 - signal, timeout, nested invocation, and panic cleanup state machines;
-- stable result-line, redaction, and structured-output behavior;
+- stable result-line, redaction, closed-reason enum, origin/code compatibility, and structured-output schema behavior;
 - compile-time first-party `unsafe` prohibition.
 
 ### Integration tests
 
 - npm, pnpm, single-package, and monorepo fixtures;
-- exact supported and unsupported npm/pnpm version fixtures, including launch-array and normalized-setting behavior;
-- exact npm workspace and pnpm filter selection;
+- exact supported and unsupported npm/pnpm version fixtures, including launch-array option spelling, ordering, forwarding, and script-shell precedence;
+- hostile machine/user script-shell configuration overridden by command-scoped launch flags, while an explicit incompatible repository configuration is rejected before launch;
+- `doctor`, `init --dry-run`, `init`, pre-lock planning, and post-lock recheck completing with sentinel `node`, npm, pnpm, Git, and package executables that fail if started;
+- exact npm workspace and pnpm filter selection with one matching package name;
+- zero-match, duplicate-name, name/path mismatch, selector-operator, and post-lock workspace-drift fixtures rejected before child launch;
+- pnpm `--fail-if-no-match` proving that an independently stale zero-match selection cannot exit successfully;
 - `rimraf dist && next build` accepted as auxiliary plus final disclosed segments;
 - `cross-env NODE_ENV=test vitest run` accepted with policy flags reaching the final Vitest command;
 - `dotenv -e .env.test -- vitest run` accepted without logging the dotenv path;
@@ -649,12 +744,13 @@ Repository validation runs sequentially. Formatting, linting, unit tests, integr
 - multiple disclosed `&&` segments accepted in original order;
 - a controlled non-final segment accepted only when its controls are already present;
 - zero controlled/disclosed target segments rejected for a selected operation;
-- `npm-run-all -s` and `run-s` accepted only for fully pre-controlled exact-name graphs;
-- `run-p`, `npm-run-all -p`, `concurrently`, Turbo/Nx fan-out, placeholders, script globs, and recursion cycles rejected;
+- exact `node --run`, `npm run`, and `pnpm run` references accepted only for cycle-free same-package graphs with depth at most three and at most 32 total leaf occurrences;
+- a 32-segment graph accepted, the attempted thirty-third segment rejected with `script-graph-too-large`, and repeated references charged on every occurrence;
+- `npm-run-all`, `run-s`, placeholders, script globs, and recursion cycles rejected as unsupported; `run-p`, `npm-run-all -p`, `concurrently`, and Turbo/Nx fan-out rejected as parallel;
 - pipe, logical-or, lone ampersand, semicolon, substitution, redirection, grouping, comment, newline, and malformed-quote fixtures rejected;
 - forwarded denial tokens rejected and forwarded paths attached only to the final adapter recipient;
 - a tested direct TypeScript compilation accepted while `tsc --watch` and `tsc -w` are denied;
-- safe lifecycle drift accepted and unsafe lifecycle drift rejected;
+- declared pre/post phases classified under both lifecycle-enabled and lifecycle-disabled machine configurations, with safe drift accepted and unsafe drift rejected;
 - a manifest change between planning and lock recheck returning 75 with no child;
 - supported and unsupported Vitest, Jest, Node test, TypeScript, and ESLint version fixtures;
 - Next.js and NestJS disclosure behavior without false single-worker claims;
@@ -665,6 +761,7 @@ Repository validation runs sequentially. Formatting, linting, unit tests, integr
 - timeout escalation from `SIGTERM` to owned-group `SIGKILL`;
 - an escaped-process fixture proving that output states the ownership limitation rather than claiming cleanup;
 - normal child exit, child signal, timeout, external signal, and internal failure disambiguation;
+- every terminal path mapped to one enum value accepted by `schemas/result-v1.schema.json`, with unknown reasons and invalid origin/code combinations rejected;
 - atomic JSON output separate from child streams;
 - interrupted file writes, marker upgrades, fresh-clone restore, conflicts, and forced-block restore;
 - portable npm installation with platform-specific optional dependencies.
@@ -682,6 +779,7 @@ On the reference host, the release build must satisfy:
 - parent-process peak resident memory at or below 24 MiB for `doctor` and `run` supervision;
 - stripped `aarch64-apple-darwin` binary at or below 12 MiB;
 - npm-launcher plus native-process aggregate peak resident memory at or below 80 MiB before the repository child starts;
+- zero child-process starts during `doctor`, `init`, `init --dry-run`, launch planning, and post-lock evidence recheck;
 - median `doctor` time at or below 100 ms outside a repository over 20 warm-cache runs;
 - median `doctor` time at or below 300 ms and p95 at or below 500 ms in a committed single-package reference fixture over 20 warm-cache runs;
 - at most 1,800 steady-state child/deadline checks while supervising `/bin/sleep 1800`;
@@ -699,27 +797,28 @@ Version 1 is ready only when:
 3. Production code never adds, removes, parses for enforcement, or rewrites a Node heap limit.
 4. `init --dry-run` displays exact changes, compatible candidate scripts, and rejection reasons without silently aliasing a script; repeated `init` is byte-for-byte idempotent.
 5. A formatter-modified managed block conflicts normally and can be removed only through the narrow forced-block path without altering surrounding text.
-6. Configuration maps valid operation labels only to exact present scripts and stable workspace selectors; lifecycle data comes from fresh repository evidence.
+6. Configuration maps valid operation labels only to exact present scripts; each workspace key maps to a canonical path and exact package name with cardinality one, no free-form package-manager selector is accepted, and pnpm workspace launches also fail on no match.
 7. The tokenizer accepts the literal and quoted grammar plus sequential `&&`, rejects every construct in §8.4.2, and never evaluates or reconstructs the script.
-8. A custom npm `script-shell`, active pnpm shell emulator, or indeterminate effective shell returns 64 before repository code runs.
-9. Tested `cross-env` and `dotenv-cli` forms unwrap for classification without exposing assignments or paths; malformed forms and `cross-env-shell` return 64.
-10. Tested `npm-run-all -s`, `run-s`, and exact same-package script references run only when the depth-limited graph is cycle-free and already controlled; every parallel, pattern, placeholder, or forwarded-argument form is denied.
-11. Missing policy or user arguments reach only an eligible final top-level adapter leaf; a need to modify an earlier, lifecycle, or nested leaf returns 64 with `nonfinal-injection-required`.
-12. `adapters/matrix-v1.json` is schema-valid, embedded, backed by exact package-manager and tool-version fixtures before any range is widened, and is the sole adapter-policy source.
-13. A relevant evidence-file change after lock acquisition returns 75, releases the lock, and starts no child.
-14. Supported Vitest, Jest, Node test-runner, TypeScript, and ESLint versions run in their matrix-proven non-watch, low-concurrency form; unknown versions return 64.
-15. Next.js and NestJS never receive a false single-worker claim and display CI guidance when internal fan-out is uncontrolled.
-16. The child receives inherited `NODE_OPTIONS` unchanged.
-17. Two managed heavy operations cannot run concurrently across repositories and nested invocation returns 73.
-18. The steady-state supervisor wakes no more than once per second, emits the 80% warning once within one second, and returns 124 after signaling only the owned process group at the deadline.
-19. External signals are recognized independently of the one-second deadline tick, forwarded to the owned group, and re-raised by the parent after cleanup.
-20. A normal child failure preserves its output and exact code; the stable result line and JSON distinguish origin.
-21. An escaped descendant is never claimed as cleaned up or targeted through process-name scanning.
-22. `restore` works when the executable can run even if host inspection marks `init` and `run` unsupported, preserves unrelated content, and implements ordinary and forced-block behavior exactly.
-23. All first-party production crates reject `unsafe`, Agent Lowmem itself makes no network request, and no production package contains the Swift probe.
-24. Unit, integration, end-to-end, dependency-policy, and release checks pass sequentially.
-25. Native and npm-launcher resource budgets pass on the recorded reference fixture and host.
-26. Homebrew, GitHub Release, and the macOS npm platform package contain the same signed native binary; portable npm installation remains non-failing on unsupported platforms.
+8. `doctor`, `init`, `init --dry-run`, pre-lock planning, and post-lock evidence recheck start no child process; only `run` after a successful locked recheck may start npm or pnpm.
+9. An explicit incompatible repository script shell or pnpm shell emulator returns 64 before launch; each managed launch pins `/bin/sh`, disables the pnpm shell emulator, does not read user/global configuration, and classifies every declared pre/post phase regardless of lifecycle-enable settings.
+10. Tested `cross-env` and `dotenv-cli` forms unwrap for classification without exposing assignments or paths; malformed forms and `cross-env-shell` return 64.
+11. Exact `node --run`, `npm run`, and `pnpm run` references run only when their same-package graph is cycle-free, no deeper than three references, contains at most 32 leaf occurrences, and is already controlled; sequential orchestrators are unsupported and parallel or race orchestrators are denied.
+12. Missing policy or user arguments reach only an eligible final top-level adapter leaf; a need to modify an earlier, lifecycle, or nested leaf returns 64 with `nonfinal-injection-required`.
+13. `adapters/matrix-v1.json` is schema-valid, embedded, backed by exact package-manager and tool-version fixtures before any range is widened, and is the sole adapter-policy source.
+14. A relevant evidence-file, workspace-cardinality, or classification change after lock acquisition returns 75, releases the lock, and starts no child.
+15. Supported Vitest, Jest, Node test-runner, TypeScript, and ESLint versions run in their matrix-proven non-watch, low-concurrency form; unknown versions return 64.
+16. Next.js and NestJS never receive a false single-worker claim and display CI guidance when internal fan-out is uncontrolled.
+17. The child receives inherited `NODE_OPTIONS` unchanged.
+18. Two managed heavy operations cannot run concurrently across repositories and nested invocation returns 73.
+19. The steady-state supervisor wakes no more than once per second, emits the 80% warning once within one second, and returns 124 after signaling only the owned process group at the deadline.
+20. External signals are recognized independently of the one-second deadline tick, forwarded to the owned group, and re-raised by the parent after cleanup.
+21. A normal child failure preserves its output and exact code; every result uses a reason from the closed v1 enum, satisfies the origin/code mapping, and validates against `schemas/result-v1.schema.json`.
+22. An escaped descendant is never claimed as cleaned up or targeted through process-name scanning.
+23. `restore` works when the executable can run even if host inspection marks `init` and `run` unsupported, preserves unrelated content, and implements ordinary and forced-block behavior exactly.
+24. All first-party production crates reject `unsafe`, Agent Lowmem itself makes no network request, and no production package contains the Swift probe.
+25. Unit, integration, end-to-end, dependency-policy, and release checks pass sequentially.
+26. Native and npm-launcher resource budgets pass on the recorded reference fixture and host.
+27. Homebrew, GitHub Release, and the macOS npm platform package contain the same signed native binary; portable npm installation remains non-failing on unsupported platforms.
 
 ## 16. Distribution and compatibility
 
@@ -746,13 +845,16 @@ The first release includes:
 - a concise README centered on avoiding unnecessary concurrency on an 8 GiB Mac;
 - installation and five-minute quick start;
 - the supported-runtime contract, exact performance-reference key, and unvalidated-performance notice;
-- the accepted script grammar, final-segment injection limit, transparent wrappers, and sequential-reference constraints;
+- the zero-child-process inspection contract and command-scoped npm/pnpm script-shell controls;
+- the accepted script grammar, final-segment injection limit, transparent wrappers, and bounded same-package reference constraints;
+- exact workspace path/name cardinality and pnpm no-match behavior;
 - generated `AGENTS.md` policy example;
 - supported-tool/version matrix and exact adapter flags;
+- the closed result-reason vocabulary and versioned JSON schema;
 - focused-first validation examples;
 - Next.js and NestJS internal-fan-out limitations and CI guidance;
 - explicit statements that v1 has no heap cap, pressure kill, or responsiveness guarantee;
-- timeout, recursion, lock, lifecycle-drift, forced-restore, and escaped-process troubleshooting;
+- timeout, recursion depth, graph size, lock, lifecycle-drift, workspace-cardinality, forced-restore, and escaped-process troubleshooting;
 - explanation that package scripts remain trusted code and direct package-manager commands bypass enforcement;
 - npm platform-support and launcher-overhead documentation;
 - security, privacy, and low-resource contribution guidance;
@@ -760,7 +862,7 @@ The first release includes:
 
 ## 18. Pressure research and deferred roadmap
 
-The observational Swift probe and its protocol remain useful, but they no longer block the deterministic v1 design. Their purpose is to decide whether a later design may promote public Dispatch pressure events from research evidence into production behavior.
+The observational Swift probe and its repository-local protocol at `docs/experiments/2026-09-02-pressure-signal-protocol.md` remain useful, but they no longer block the deterministic v1 design. Their purpose is to decide whether a later design may promote public Dispatch pressure events from research evidence into production behavior. The protocol is internal evidence, not an externally resolvable authoritative reference.
 
 The pressure experiment must complete its documented baseline, workload, timing, and information-sufficiency gates. Raw traces remain local and ignored. Only an aggregate report may be committed after privacy review.
 
@@ -775,6 +877,7 @@ A future pressure feature requires all of the following:
 
 Other deferred work includes:
 
+- `npm-run-all`, `run-s`, and other sequential orchestration syntax after real repository demand justifies the larger parser and graph surface;
 - an evidence-backed Node heap policy based on workload fixtures rather than a universal constant;
 - Linux, Intel Mac, and other Apple Silicon or memory profiles;
 - Python, Rust, Java, Flutter, and container adapters;
@@ -827,6 +930,20 @@ The CLI remains the enforcement layer. Future skills teach agents to use it; the
 | Four supervisor wakeups per second had no value after pressure polling was removed | Limit steady-state deadline and child-status work to one wakeup per second and specify deadline tolerance |
 | A second consecutive evidence-change note implied hidden cross-run state | Keep v1 stateless: return one deterministic `evidence-changed` result with no automatic retry or attribution |
 
+### Revision 6 — bounded implementation contract
+
+Revision 6 supersedes any conflicting Revision 5 decision while preserving Revision 5 as review history.
+
+| Final review issue or simplification | Revision 6 decision |
+| --- | --- |
+| Querying npm/pnpm configuration could consume most or all of the `doctor` latency budget | Inspection and post-lock recheck start zero children; parse only matrix-declared repository configuration as data, reject incompatible repository shell semantics, and pin safe shell behavior with fixture-tested command-scoped launch options |
+| Lifecycle-enable configuration would otherwise require another precedence engine | Always classify declared pre/post scripts as potential phases and never force enablement; a package-manager policy may only omit preclassified work |
+| Reference depth alone did not bound total graph expansion | Retain depth three and cycle detection, then add a fixed 32-leaf-occurrence cap across the selected script, potential lifecycle phases, and all references |
+| `reason` values were scattered prose rather than an agent contract | Define one closed origin/code-compatible enum and require the same enum in `schemas/result-v1.schema.json`; vocabulary changes require a new schema version |
+| A free-form pnpm filter could match zero or multiple packages while returning misleading success | Replace `packageManagerSelector` with exact `packageName`, require one path/name match before launch, reject selector operators, recheck cardinality under the lock, and add pnpm `--fail-if-no-match` as defense in depth |
+| `npm-run-all` created the largest parser surface in the initial release | Defer `npm-run-all`, `run-s`, and similar orchestrators; v1 expands only exact fixture-tested `node --run`, `npm run`, and `pnpm run` references |
+| The experiment used a repository-relative link that could not resolve from an external copy of the spec | Identify the protocol as repository-local evidence in §18 and keep §21 limited to externally resolvable primary references |
+
 ## 20. Brand decision
 
 The canonical brand is **Agent Lowmem**. The product name emphasizes a precise developer problem and the messaging emphasizes capability rather than reduced intelligence.
@@ -846,16 +963,18 @@ The spelling `lowmem` is mandatory. `lowmen`, `agent-lowmen`, and `agentlowmen` 
 
 - [Apple Dispatch memory-pressure source](https://developer.apple.com/documentation/dispatch/dispatch_source_type_memorypressure) for the public event interface.
 - [Apple Dispatch memory-pressure events](https://developer.apple.com/documentation/dispatch/dispatchsource/memorypressureevent) for normal, warning, and critical transition semantics.
-- [Agent Lowmem pressure-signal experiment](../../experiments/2026-09-02-pressure-signal-protocol.md) for the observational evidence gate.
 - [Rust `Command`](https://doc.rust-lang.org/std/process/struct.Command.html) for child execution and inherited stdio.
 - [Rust Unix `CommandExt`](https://doc.rust-lang.org/std/os/unix/process/trait.CommandExt.html) for Unix child-process configuration.
 - [Node.js command-line options](https://nodejs.org/api/cli.html#node_optionsoptions) for inherited `NODE_OPTIONS` behavior.
-- [npm `run`](https://docs.npmjs.com/cli/v11/commands/npm-run/) for selected-script argument forwarding, pre/post exclusion, default `/bin/sh`, and `script-shell` configuration.
+- [npm `run`](https://docs.npmjs.com/cli/v11/commands/npm-run/) for selected-script argument forwarding, pre/post exclusion, and script execution.
+- [npm configuration](https://docs.npmjs.com/using-npm/config/) for command-line precedence, default `/bin/sh`, and `script-shell` configuration.
 - [npm scripts](https://docs.npmjs.com/cli/using-npm/scripts) for package-manager lifecycle semantics.
-- [pnpm `run`](https://pnpm.io/cli/run) for script forwarding, lifecycle behavior, workspace selection, `scriptShell`, and `shellEmulator`.
+- [pnpm `run`](https://pnpm.io/cli/run) for script forwarding and lifecycle behavior.
+- [pnpm settings](https://pnpm.io/settings) for supported configuration sources and command-line precedence.
+- [pnpm other settings](https://pnpm.io/settings/other) for `scriptShell`, `shellEmulator`, and lifecycle settings.
+- [pnpm workspace filtering](https://pnpm.io/workspaces#failifnomatch) for `failIfNoMatch` behavior.
 - [`cross-env` README](https://github.com/kentcdodds/cross-env/blob/main/README.md) for its single-command execution and the separate shell-enabled bin.
 - [`dotenv-cli` README](https://github.com/entropitor/dotenv-cli) for repeated `-e` files and the `--` command boundary.
-- [`npm-run-all` sequential runner](https://github.com/mysticatea/npm-run-all/blob/master/docs/npm-run-all.md) for sequential groups, patterns, placeholders, and parallel modes.
 - [Vitest CLI](https://vitest.dev/guide/cli) and [`fileParallelism`](https://vitest.dev/config/fileparallelism) for public run, watch, file-parallelism, and worker controls.
 - [Jest CLI](https://jestjs.io/docs/cli) for public `--runInBand` and watch controls.
 - [Node.js `--test-concurrency`](https://nodejs.org/api/cli.html#--test-concurrencyconcurrency) for test-runner file concurrency.
