@@ -12,7 +12,7 @@
 
 ## Global Constraints
 
-- Start from commit `edcc3d7` on a clean isolated branch named `codex/agent-lowmem-phase-1`; use `superpowers:using-git-worktrees` when execution begins.
+- Start from commit `edcc3d7` on a clean isolated branch named `feat/agent-lowmem-phase-1`; use `superpowers:using-git-worktrees` when execution begins.
 - Rust 1.85.0 is the minimum and pinned implementation toolchain; every first-party production target uses edition 2024 and `#![forbid(unsafe_code)]`.
 - Run only one install, compile, formatter, linter, test, or measurement command at a time. Every Cargo command that can compile uses `-j 1`; tests also use `--test-threads=1`.
 - Production `doctor` starts no child process, executes no Git/Node/npm/pnpm/package binary, makes no network request, writes no repository file, and reads no user/global package-manager configuration.
