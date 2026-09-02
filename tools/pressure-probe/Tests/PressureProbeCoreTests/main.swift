@@ -1,4 +1,5 @@
 import Darwin
+import Foundation
 
 import PressureProbeCore
 
@@ -16,6 +17,37 @@ func expectEqual<T: Equatable>(
         throw TestFailure(
             description: "\(file):\(line): expected \(expected), got \(actual)"
         )
+    }
+}
+
+func expectThrows<E: Error>(
+    _ errorType: E.Type,
+    _ operation: () throws -> Void,
+    file: StaticString = #filePath,
+    line: UInt = #line
+) throws {
+    do {
+        try operation()
+        throw TestFailure(
+            description: "\(file):\(line): expected \(errorType), but no error was thrown"
+        )
+    } catch is E {
+        return
+    } catch {
+        throw TestFailure(
+            description: "\(file):\(line): expected \(errorType), got \(error)"
+        )
+    }
+}
+
+func expectTrue(
+    _ condition: @autoclosure () -> Bool,
+    _ message: String,
+    file: StaticString = #filePath,
+    line: UInt = #line
+) throws {
+    guard condition() else {
+        throw TestFailure(description: "\(file):\(line): \(message)")
     }
 }
 
@@ -81,6 +113,70 @@ func summarizesObservedSamplesWithoutInventingMissingMetrics() throws {
     try expectEqual(summary.measurementErrorCount, 1)
 }
 
+func parsesOutputLabelAndArgumentArray() throws {
+    let config = try ProbeConfiguration.parse(
+        arguments: [
+            "--output", "/tmp/run.jsonl",
+            "--label", "next-cold-01",
+            "--", "pnpm", "build",
+        ]
+    )
+
+    try expectEqual(config.outputURL.path, "/tmp/run.jsonl")
+    try expectEqual(config.label, "next-cold-01")
+    try expectEqual(config.command, ["pnpm", "build"])
+    try expectEqual(config.commandMetadata.executable, "pnpm")
+    try expectEqual(config.commandMetadata.argumentCount, 1)
+}
+
+func rejectsLabelsThatCouldContainPathsOrFreeText() throws {
+    try expectThrows(ProbeConfigurationError.self) {
+        _ = try ProbeConfiguration.parse(
+            arguments: [
+                "--output", "/tmp/run.jsonl",
+                "--label", "next build /Users/me",
+                "--", "pnpm", "build",
+            ]
+        )
+    }
+}
+
+func createsOwnerOnlyJSONLAndRefusesOverwrite() throws {
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("pressure-probe-tests-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(
+        at: directory,
+        withIntermediateDirectories: false
+    )
+    defer { try? FileManager.default.removeItem(at: directory) }
+
+    let trace = directory.appendingPathComponent("trace.jsonl")
+    let writer = try JSONLineWriter.create(at: trace)
+    try writer.append(
+        event: "sample",
+        monotonicNanoseconds: 42,
+        wallTime: "2026-09-02T00:00:00Z",
+        payload: ["pressure": "normal"]
+    )
+    try writer.close()
+
+    var fileInfo = stat()
+    try expectEqual(lstat(trace.path, &fileInfo), 0)
+    try expectEqual(fileInfo.st_mode & 0o777, 0o600)
+
+    let data = try Data(contentsOf: trace)
+    let object = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+    try expectEqual(object?["schemaVersion"] as? Int, 1)
+    try expectEqual(object?["event"] as? String, "sample")
+    let payload = object?["data"] as? [String: String]
+    try expectEqual(payload?["pressure"], "normal")
+
+    try expectThrows(JSONLineWriterError.self) {
+        _ = try JSONLineWriter.create(at: trace)
+    }
+    try expectEqual(try Data(contentsOf: trace), data)
+}
+
 let tests: [(String, () throws -> Void)] = [
     ("maps known sysctl values", mapsKnownSysctlValues),
     (
@@ -94,6 +190,15 @@ let tests: [(String, () throws -> Void)] = [
     (
         "summarizes samples without inventing missing metrics",
         summarizesObservedSamplesWithoutInventingMissingMetrics
+    ),
+    ("parses output, label, and argument array", parsesOutputLabelAndArgumentArray),
+    (
+        "rejects labels that could contain paths or free text",
+        rejectsLabelsThatCouldContainPathsOrFreeText
+    ),
+    (
+        "creates owner-only JSONL and refuses overwrite",
+        createsOwnerOnlyJSONLAndRefusesOverwrite
     ),
 ]
 
