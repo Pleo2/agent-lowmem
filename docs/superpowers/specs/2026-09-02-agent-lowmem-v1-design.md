@@ -6,7 +6,7 @@
 
 **Product:** Agent Lowmem
 
-**Domain:** `agentlowmem.dev`
+**Domain:** `agentlowmem.dev` (acquired 2026-09-02)
 
 **Repository and npm package:** `agent-lowmem`
 
@@ -14,7 +14,7 @@
 
 ## 1. Summary
 
-Agent Lowmem is an open-source, policy-first command-line tool for running coding-agent workloads safely on memory-constrained Macs. Version 1 targets Apple Silicon Macs with 8 GB of unified memory and JavaScript/TypeScript repositories that use Node.js, npm or pnpm, Next.js, NestJS, Vitest, or Jest.
+Agent Lowmem is an open-source, policy-first native command-line tool for running coding-agent workloads safely on memory-constrained Macs. Its core is written in Rust, while version 1 targets Apple Silicon Macs with 8 GB of unified memory and JavaScript/TypeScript repositories that use Node.js, npm or pnpm, Next.js, NestJS, Vitest, or Jest.
 
 The tool measures current memory pressure, generates repository guidance for agents through a managed `AGENTS.md` block, and launches heavy commands with conservative process, heap, and worker limits. It never requires `sudo`, makes no permanent macOS tuning changes, and only controls processes it starts.
 
@@ -173,7 +173,13 @@ It removes the managed `AGENTS.md` block and restores or removes `.agent-lowmem.
 
 ## 8. Architecture
 
-The package is a Node.js CLI written in TypeScript and organized into focused modules.
+Agent Lowmem is a native Rust CLI organized into focused modules. The executable does not require Node.js to start, does not embed a garbage collector, and does not use an asynchronous runtime.
+
+The Rust workspace uses edition 2024 with Rust 1.85 as its minimum supported Rust version. Release and CI builds use the current stable Rust toolchain and a committed `Cargo.lock`.
+
+First-party crates must declare `#![forbid(unsafe_code)]`. A reviewed dependency may encapsulate platform-specific unsafe code behind a safe interface, but every direct runtime dependency requires a documented purpose. The core runs on one thread; it monitors the managed child with a synchronous `try_wait` and sampling loop rather than adding Tokio, async-std, or a background service.
+
+Release builds use link-time optimization, one code-generation unit, symbol stripping, and `panic = "abort"`. Optimization targets runtime performance while preserving a small binary; correctness and measurement take precedence over speculative micro-optimization.
 
 ### 8.1 Host inspector
 
@@ -362,6 +368,7 @@ Version 1 is local-only and sends no telemetry.
 
 It must:
 
+- compile all first-party crates with `#![forbid(unsafe_code)]`;
 - avoid printing or persisting environment-variable values;
 - avoid shell-string construction for child commands;
 - validate configuration against a bundled schema;
@@ -369,7 +376,10 @@ It must:
 - use atomic writes for configuration, manifests, and `AGENTS.md` updates;
 - store no raw process command lines in the lock;
 - hash repository paths recorded outside the repository;
-- make network access unnecessary for `doctor`, `init`, `run`, and `restore` after package installation.
+- make network access unnecessary for `doctor`, `init`, `run`, and `restore` after package installation;
+- commit `Cargo.lock` and deny unknown licenses, duplicate critical dependencies, yanked crates, and known advisories in CI;
+- publish SHA-256 checksums and GitHub build provenance for release binaries;
+- keep the npm package free of lifecycle scripts and network downloaders.
 
 ## 13. Observability
 
@@ -390,7 +400,7 @@ JSON output never includes usernames, absolute home-directory paths, environment
 
 ## 14. Testing strategy
 
-The implementation plan must preserve a low-resource test suite.
+The implementation plan must preserve a low-resource Rust test suite. Repository validation runs sequentially with `cargo test -- --test-threads=1`; formatting, linting, tests, security checks, and release builds run as separate operations rather than concurrently.
 
 ### Unit tests
 
@@ -403,6 +413,7 @@ The implementation plan must preserve a low-resource test suite.
 - stale and live lock decisions;
 - red-pressure sample state machine;
 - redaction and JSON schema behavior.
+- enforcement of the first-party `unsafe` prohibition.
 
 ### Integration tests
 
@@ -412,12 +423,24 @@ The implementation plan must preserve a low-resource test suite.
 - lock contention between two processes;
 - managed child termination without signaling an unrelated sentinel process;
 - interrupted atomic writes and restoration conflicts.
+- verification that the npm package invokes the native Mach-O executable without a Node.js launcher.
 
 ### End-to-end tests
 
 One macOS Apple Silicon workflow validates `doctor`, `init`, a focused test run, a small build, and `restore`. Heavy pressure is simulated through injected snapshots; the automated test suite must not intentionally exhaust host memory.
 
 The project's own tests run sequentially by default so Agent Lowmem follows the policy it publishes.
+
+### Resource budgets
+
+On the reference M2 8 GB Mac, the release build must satisfy all of these budgets:
+
+- `doctor` parent-process peak resident memory at or below 24 MiB;
+- median `doctor` wall time at or below 250 ms over 20 consecutive runs;
+- stripped `aarch64-apple-darwin` executable at or below 12 MiB;
+- no background process or thread remaining after command completion.
+
+Measurements exclude the short-lived macOS utilities invoked to collect host evidence and are recorded with the release artifacts. A budget regression blocks release unless this design is revised explicitly.
 
 ## 15. Acceptance criteria
 
@@ -436,19 +459,31 @@ Version 1 is ready when all of the following are true:
 11. `restore --dry-run` previews the reversal and `restore` preserves unrelated `AGENTS.md` content.
 12. The CLI performs no network request and leaves no background process after each command.
 13. Unit, integration, and end-to-end tests run sequentially and pass within the project's own declared low-memory policy.
+14. All first-party crates reject `unsafe` code at compile time and dependency-policy checks pass.
+15. The release binary satisfies the documented memory, startup, size, and cleanup budgets on the reference Mac.
+16. Homebrew, GitHub Release, and npm installations execute the same versioned native binary.
 
 ## 16. Distribution and compatibility
 
-Version 1 is distributed as an MIT-licensed npm package named `agent-lowmem`. It requires Node.js 22 or newer and supports actively maintained Node.js LTS releases on macOS Apple Silicon.
+Version 1 is an MIT-licensed Rust binary for `aarch64-apple-darwin`. The CLI itself has no Node.js runtime requirement. Node.js, npm, and pnpm are inspected only as properties of the repository being optimized.
 
-The initial installation path is:
+The primary installation path is Homebrew:
+
+```text
+brew install pleo2/tap/agent-lowmem
+agent-lowmem init
+```
+
+GitHub Releases publishes the same stripped binary, SHA-256 checksum, and build provenance.
+
+For project-local installation, the npm package contains the prebuilt `aarch64-apple-darwin` executable, declares its supported operating system and CPU in package metadata, and exposes it directly through `bin`. It contains no JavaScript launcher, `postinstall` hook, or network downloader.
 
 ```text
 pnpm add -D agent-lowmem
 pnpm exec agent-lowmem init
 ```
 
-Equivalent npm installation is supported. Global installation is optional but not required or assumed.
+Equivalent npm installation is supported. Building from source with Cargo is documented for contributors but is not the default installation path.
 
 ## 17. Documentation deliverables
 
@@ -486,7 +521,7 @@ The canonical brand is **Agent Lowmem**. The product name emphasizes a precise d
 Canonical identifiers:
 
 - display name: `Agent Lowmem`;
-- domain: `agentlowmem.dev`;
+- domain: `agentlowmem.dev`, acquired on 2026-09-02;
 - repository: `agent-lowmem`;
 - npm package: `agent-lowmem`;
 - executable: `agent-lowmem`;
