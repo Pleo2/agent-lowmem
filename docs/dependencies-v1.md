@@ -2,7 +2,8 @@
 
 | Requirement | Purpose | Production boundary | License |
 | --- | --- | --- | --- |
-| `rustix 1.1.4` (`std`, `fs`) | Safe component-relative no-follow evidence reads | Filesystem evidence only in this checkpoint; no process enumeration | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
+| `rustix 1.1.4` (`std`, `fs`, `process`) | Safe component-relative no-follow reads, advisory lock, effective UID, and process-group probes | Filesystem and exact process/group identities only; no process enumeration | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
+| `libproc 0.14.11` (macOS only) | Read one PID's kernel process-start absolute time | Only `pidrusage::<RUsageInfoV4>(pid)`; process listing and command/path APIs are excluded | MIT |
 | `serde 1.0` | Derive stable structured records | Serialization only | MIT OR Apache-2.0 |
 | `serde_json 1.0` | Parse manifests and emit JSON | No script evaluation | MIT OR Apache-2.0 |
 | `semver 1.0` | Validate declared package-manager versions | Data-only parsing | MIT OR Apache-2.0 |
@@ -11,7 +12,9 @@
 
 `Cargo.lock` is the authority for exact resolved versions. Every direct dependency addition requires purpose, source/API review, license review, one-worker tests, and a separate commit. Production dependencies may not add a network client, async runtime, daemon, shell evaluator, or lifecycle installer.
 
-`sha2 0.11.0` declares Rust 1.85 and adds only the RustCrypto digest stack with default allocation and OID features disabled. `rustix 1.1.4` declares Rust 1.63; this checkpoint enables only `std` and `fs` so evidence paths can be opened below a directory descriptor with `O_NOFOLLOW`. Both versions and their feature sets were reviewed from their published crate metadata before use.
+`sha2 0.11.0` declares Rust 1.85 and adds only the RustCrypto digest stack with default allocation and OID features disabled. `rustix 1.1.4` declares Rust 1.63; this checkpoint enables `std`, `fs`, and `process` so evidence paths can be opened below a directory descriptor with `O_NOFOLLOW`, the effective UID can be checked, and a single process group can be probed without enumeration.
+
+`libproc 0.14.11` declares Rust 1.72 and is scoped to macOS. Its production dependency delta is `errno` and the already-present `libc`; its build uses `bindgen 0.72.1` with the runtime feature and therefore adds build-only Clang/loading dependencies. Agent Lowmem calls only the safe one-PID `pidrusage::<RUsageInfoV4>` API and reads `ri_proc_start_abstime`; broad process, path, file-descriptor, and command inspection APIs are outside the boundary.
 
 ## Phase 1 Development Baseline — 2026-09-02
 
