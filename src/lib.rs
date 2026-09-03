@@ -4,6 +4,7 @@ pub mod adapter;
 pub mod cli;
 pub mod configuration;
 pub mod doctor;
+pub mod evidence;
 pub mod host;
 pub mod package_manager;
 pub mod policy;

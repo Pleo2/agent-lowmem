@@ -89,11 +89,11 @@ git commit -m "feat: parse strict managed run requests"
 - Consumes: canonical repository root and validated repository-relative paths.
 - Produces: `EvidenceReader`, `EvidenceFile { relative_path, bytes, sha256 }`, `EvidenceFile::digest() -> EvidenceDigest`, `EvidenceDigest`, `EvidenceDigest::hex() -> String`, and sorted `EvidenceSnapshot`.
 
-- [ ] **Step 1: Record and review the SHA-256 dependency before use**
+- [x] **Step 1: Record and review the evidence dependencies before use**
 
-Pin an MSRV-compatible `sha2` release with default features disabled where possible. Record MIT OR Apache-2.0 license, pure-Rust role, enabled features, and measured dependency-tree delta in `docs/dependencies-v1.md`.
+Pin an MSRV-compatible `sha2` release with default features disabled where possible and `rustix` with only `std` and `fs` for component-relative no-follow opens. Record their licenses, roles, enabled features, and dependency-tree delta in `docs/dependencies-v1.md`.
 
-- [ ] **Step 2: Write failing digest, ordering, and path-boundary tests**
+- [x] **Step 2: Write failing digest, ordering, and path-boundary tests**
 
 ```rust
 let first = reader.read("package.json").unwrap();
@@ -103,17 +103,17 @@ assert_eq!(reader.read("../outside").unwrap_err(), Reason::RepositoryUnsupported
 assert_eq!(reader.read("linked/package.json").unwrap_err(), Reason::RepositoryUnsupported);
 ```
 
-- [ ] **Step 3: Run focused tests and confirm RED**
+- [x] **Step 3: Run focused tests and confirm RED**
 
 Run: `cargo test evidence::tests -j 1 -- --test-threads=1`
 
 Expected: compile failure because the evidence module does not exist.
 
-- [ ] **Step 4: Implement one-read bytes plus digest**
+- [x] **Step 4: Implement one-read bytes plus digest**
 
 Open each component below the canonical root with safe no-follow directory/file operations, require a regular final file, read once, hash those exact bytes, and return bytes plus digest. Sort and deduplicate by relative identity; reject conflicting duplicate digests.
 
-- [ ] **Step 5: Verify and commit**
+- [x] **Step 5: Verify and commit**
 
 Run: `cargo test evidence::tests -j 1 -- --test-threads=1`
 
@@ -194,7 +194,7 @@ git commit -m "feat: build evidence-backed run plans"
 
 - [ ] **Step 1: Review and pin safe low-level dependencies**
 
-Review `rustix` features needed for UID, no-follow filesystem access, advisory `flock`, and process-group probes. Review `libproc` for one-PID start identity only. Reject broad enumeration APIs and record licenses, MSRVs, build dependencies, features, and dependency-tree deltas.
+Extend the already pinned `rustix` feature set only for UID, advisory `flock`, and process-group probes. Review `libproc` for one-PID start identity only. Reject broad enumeration APIs and record licenses, MSRVs, build dependencies, features, and dependency-tree deltas.
 
 - [ ] **Step 2: Write failing lease tests**
 

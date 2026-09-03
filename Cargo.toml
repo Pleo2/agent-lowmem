@@ -7,9 +7,11 @@ license = "MIT"
 publish = false
 
 [dependencies]
+rustix = { version = "=1.1.4", features = ["fs"] }
 semver = "1.0"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+sha2 = { version = "=0.11.0", default-features = false }
 sysctl = "=0.7.1"
 
 [profile.release]

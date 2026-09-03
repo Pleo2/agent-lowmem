@@ -2,12 +2,16 @@
 
 | Requirement | Purpose | Production boundary | License |
 | --- | --- | --- | --- |
+| `rustix 1.1.4` (`std`, `fs`) | Safe component-relative no-follow evidence reads | Filesystem evidence only in this checkpoint; no process enumeration | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
 | `serde 1.0` | Derive stable structured records | Serialization only | MIT OR Apache-2.0 |
 | `serde_json 1.0` | Parse manifests and emit JSON | No script evaluation | MIT OR Apache-2.0 |
 | `semver 1.0` | Validate declared package-manager versions | Data-only parsing | MIT OR Apache-2.0 |
+| `sha2 0.11.0` (no default features) | SHA-256 over exact repository evidence bytes | Pure-Rust hashing only; no network or secret storage | MIT OR Apache-2.0 |
 | `sysctl 0.7.1` | Safe macOS sysctl reads | Read-only host inspector | MIT |
 
 `Cargo.lock` is the authority for exact resolved versions. Every direct dependency addition requires purpose, source/API review, license review, one-worker tests, and a separate commit. Production dependencies may not add a network client, async runtime, daemon, shell evaluator, or lifecycle installer.
+
+`sha2 0.11.0` declares Rust 1.85 and adds only the RustCrypto digest stack with default allocation and OID features disabled. `rustix 1.1.4` declares Rust 1.63; this checkpoint enables only `std` and `fs` so evidence paths can be opened below a directory descriptor with `O_NOFOLLOW`. Both versions and their feature sets were reviewed from their published crate metadata before use.
 
 ## Phase 1 Development Baseline — 2026-09-02
 
