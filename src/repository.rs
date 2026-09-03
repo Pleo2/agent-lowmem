@@ -3,11 +3,14 @@ use crate::{
         AdapterMatrix, load_embedded_matrix, match_package_manager, package_for_executable,
         resolve_installed_package,
     },
-    configuration::{AgentLowmemConfig, OperationConfig, parse_config},
+    configuration::{
+        AgentLowmemConfig, OperationConfig, parse_config, select_operation, valid_key,
+    },
+    evidence::{EvidenceDigest, EvidenceReader, EvidenceSnapshot},
     package_manager::{
         NodeVersionEvidence, inspect_node_version, inspect_npmrc, inspect_pnpm_settings,
     },
-    policy::{PolicyInput, PolicyTarget, build_operation_policy},
+    policy::{OperationPolicy, PolicyInput, PolicyTarget, build_operation_policy},
     result::Reason,
     script::{
         graph::expand_script_graph,
@@ -20,11 +23,15 @@ use crate::{
 };
 use semver::Version;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::{
     collections::BTreeMap,
-    fs, io,
+    fmt, fs, io,
     path::{Path, PathBuf},
 };
+
+#[cfg(unix)]
+use std::os::unix::ffi::OsStrExt;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GitRoot(PathBuf);
@@ -33,6 +40,113 @@ impl GitRoot {
     fn as_path(&self) -> &Path {
         &self.0
     }
+}
+
+#[derive(Clone, PartialEq, Eq)]
+pub struct RunSelection {
+    pub operation_key: String,
+    pub workspace_key: Option<String>,
+    pub forwarded_arguments: Vec<String>,
+}
+
+impl RunSelection {
+    pub fn root(operation_key: impl Into<String>, forwarded_arguments: Vec<String>) -> Self {
+        Self {
+            operation_key: operation_key.into(),
+            workspace_key: None,
+            forwarded_arguments,
+        }
+    }
+
+    pub fn workspace(
+        workspace_key: impl Into<String>,
+        operation_key: impl Into<String>,
+        forwarded_arguments: Vec<String>,
+    ) -> Self {
+        Self {
+            operation_key: operation_key.into(),
+            workspace_key: Some(workspace_key.into()),
+            forwarded_arguments,
+        }
+    }
+}
+
+impl fmt::Debug for RunSelection {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let operation_key = valid_key(&self.operation_key).then_some(self.operation_key.as_str());
+        let workspace_key = self.workspace_key.as_deref().filter(|key| valid_key(key));
+        formatter
+            .debug_struct("RunSelection")
+            .field("operation_key", &operation_key.unwrap_or("invalid"))
+            .field("workspace_key", &workspace_key)
+            .field("forwarded_argument_count", &self.forwarded_arguments.len())
+            .finish()
+    }
+}
+
+#[derive(Clone, PartialEq, Eq)]
+pub struct RunPlan {
+    root: GitRoot,
+    policy: OperationPolicy,
+    evidence: EvidenceSnapshot,
+    repository_hash: [u8; 32],
+    package_manager: PackageManagerReport,
+    forwarded_argument_count: usize,
+}
+
+impl RunPlan {
+    pub fn policy(&self) -> &OperationPolicy {
+        &self.policy
+    }
+
+    pub fn evidence(&self) -> &EvidenceSnapshot {
+        &self.evidence
+    }
+
+    pub fn redacted(&self) -> RedactedRunPlan<'_> {
+        RedactedRunPlan {
+            package_manager: &self.package_manager,
+            policy: self.policy.redacted_summary(),
+            evidence: self
+                .evidence
+                .files()
+                .iter()
+                .map(|file| RedactedEvidenceDigest {
+                    relative_path: file.relative_path(),
+                    sha256: file.hex(),
+                })
+                .collect(),
+            forwarded_argument_count: self.forwarded_argument_count,
+        }
+    }
+}
+
+impl fmt::Debug for RunPlan {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.redacted().fmt(formatter)
+    }
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RedactedRunPlan<'a> {
+    package_manager: &'a PackageManagerReport,
+    policy: crate::policy::RedactedPolicySummary<'a>,
+    evidence: Vec<RedactedEvidenceDigest<'a>>,
+    forwarded_argument_count: usize,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RedactedEvidenceDigest<'a> {
+    relative_path: &'a str,
+    sha256: String,
+}
+
+pub fn plans_match(before: &RunPlan, after: &RunPlan) -> bool {
+    before.evidence == after.evidence
+        && before.policy == after.policy
+        && before.repository_hash == after.repository_hash
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -235,6 +349,333 @@ pub fn inspect_repository(start: &Path) -> RepositoryReport {
         operations,
         failure_reason: None,
     }
+}
+
+pub fn plan_run(start: &Path, selection: &RunSelection) -> Result<RunPlan, Reason> {
+    if !valid_key(&selection.operation_key)
+        || selection
+            .workspace_key
+            .as_deref()
+            .is_some_and(|key| !valid_key(key))
+    {
+        return Err(Reason::InvalidConfig);
+    }
+    let root = find_git_root(start)
+        .map_err(|_| Reason::RepositoryUnsupported)?
+        .ok_or(Reason::RepositoryUnsupported)?;
+    let reader = EvidenceReader::new(root.as_path())?;
+    let mut evidence = PlanningEvidence::new(reader, root.as_path());
+
+    let package_file = evidence.read("package.json", Reason::RepositoryUnsupported)?;
+    let manifest: RootPackageManifest =
+        serde_json::from_slice(&package_file).map_err(|_| Reason::RepositoryUnsupported)?;
+    let package_manager = manifest
+        .package_manager
+        .as_deref()
+        .and_then(parse_package_manager)
+        .ok_or(Reason::PackageManagerUnsupported)?;
+    let (selected_lock, other_lock) = match package_manager.kind {
+        PackageManagerKind::Npm => ("package-lock.json", "pnpm-lock.yaml"),
+        PackageManagerKind::Pnpm => ("pnpm-lock.yaml", "package-lock.json"),
+    };
+    evidence.read(selected_lock, Reason::PackageManagerUnsupported)?;
+    if regular_file_state(&root.as_path().join(other_lock)) != Some(false) {
+        return Err(Reason::PackageManagerUnsupported);
+    }
+
+    let matrix = load_embedded_matrix()?;
+    match_package_manager(&matrix, &package_manager)?;
+
+    let pnpm_document = match package_manager.kind {
+        PackageManagerKind::Npm => {
+            let npmrc = evidence.read_optional(".npmrc", Reason::ScriptShellUnsupported)?;
+            inspect_npmrc(npmrc.as_deref())?;
+            None
+        }
+        PackageManagerKind::Pnpm => {
+            let bytes =
+                evidence.read_optional("pnpm-workspace.yaml", Reason::WorkspaceUnsupported)?;
+            match bytes {
+                Some(bytes) => {
+                    let document = parse_pnpm_workspace(&bytes).map_err(|error| error.reason())?;
+                    inspect_pnpm_settings(&document)?;
+                    Some(document)
+                }
+                None => None,
+            }
+        }
+    };
+    let patterns = match package_manager.kind {
+        PackageManagerKind::Npm => {
+            parse_npm_workspaces(&package_file).map_err(|error| error.reason())?
+        }
+        PackageManagerKind::Pnpm => pnpm_document
+            .as_ref()
+            .map(|document| document.patterns.clone())
+            .unwrap_or_default(),
+    };
+    let candidates =
+        expand_workspace_patterns(root.as_path(), &patterns).map_err(|error| error.reason())?;
+    let mut workspace_manifests = BTreeMap::new();
+    for candidate in &candidates {
+        let relative_manifest = format!("{}/package.json", candidate.relative_path);
+        let workspace_bytes = evidence.read(&relative_manifest, Reason::WorkspaceUnsupported)?;
+        let workspace_manifest: WorkspaceRunManifest =
+            serde_json::from_slice(&workspace_bytes).map_err(|_| Reason::WorkspaceUnsupported)?;
+        if workspace_manifest.name != candidate.package_name {
+            return Err(Reason::WorkspaceCardinality);
+        }
+        workspace_manifests.insert(candidate.relative_path.clone(), workspace_manifest);
+    }
+
+    let config_bytes = evidence.read(".agent-lowmem.json", Reason::InvalidConfig)?;
+    let config = parse_config(&config_bytes).map_err(|error| error.reason())?;
+    if config.package_manager != package_manager.kind {
+        return Err(Reason::InvalidConfig);
+    }
+    let operation = select_operation(
+        &config,
+        selection.workspace_key.as_deref(),
+        &selection.operation_key,
+    )
+    .map_err(|error| error.reason())?;
+
+    let (selected_package, target, scripts) = match selection.workspace_key.as_deref() {
+        None => (
+            root.as_path().to_path_buf(),
+            PolicyTarget::Root,
+            manifest.scripts,
+        ),
+        Some(workspace_key) => {
+            let configured = config
+                .workspaces
+                .get(workspace_key)
+                .ok_or(Reason::WorkspaceCardinality)?;
+            let candidate = resolve_configured_workspace(configured, &candidates)
+                .map_err(|error| error.reason())?;
+            let workspace_manifest = workspace_manifests
+                .get(&candidate.relative_path)
+                .ok_or(Reason::WorkspaceCardinality)?;
+            (
+                root.as_path().join(&candidate.relative_path),
+                PolicyTarget::Workspace {
+                    key: workspace_key.to_owned(),
+                    package_name: candidate.package_name.clone(),
+                },
+                workspace_manifest.scripts.clone(),
+            )
+        }
+    };
+
+    let node_evidence = read_node_evidence(&mut evidence)?;
+    let policy = build_run_policy(RunPolicyInput {
+        root: root.as_path(),
+        selected_package: &selected_package,
+        target,
+        operation_key: &selection.operation_key,
+        operation,
+        scripts: &scripts,
+        package_manager: &package_manager,
+        matrix: &matrix,
+        node_evidence: node_evidence.as_ref(),
+        forwarded_arguments: &selection.forwarded_arguments,
+        evidence: &mut evidence,
+    })?;
+
+    let snapshot = EvidenceSnapshot::new(evidence.digests)?;
+    Ok(RunPlan {
+        repository_hash: repository_hash(root.as_path()),
+        root,
+        policy,
+        evidence: snapshot,
+        package_manager,
+        forwarded_argument_count: selection.forwarded_arguments.len(),
+    })
+}
+
+struct PlanningEvidence {
+    reader: EvidenceReader,
+    root: PathBuf,
+    digests: Vec<EvidenceDigest>,
+}
+
+impl PlanningEvidence {
+    fn new(reader: EvidenceReader, root: &Path) -> Self {
+        Self {
+            reader,
+            root: root.to_path_buf(),
+            digests: Vec::new(),
+        }
+    }
+
+    fn read(&mut self, relative_path: &str, failure: Reason) -> Result<Vec<u8>, Reason> {
+        let file = self.reader.read(relative_path).map_err(|_| failure)?;
+        self.digests.push(file.digest());
+        Ok(file.bytes().to_vec())
+    }
+
+    fn read_optional(
+        &mut self,
+        relative_path: &str,
+        failure: Reason,
+    ) -> Result<Option<Vec<u8>>, Reason> {
+        let absolute = self.root.join(relative_path);
+        match fs::symlink_metadata(&absolute) {
+            Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_file() => {
+                Err(failure)
+            }
+            Ok(_) => self.read(relative_path, failure).map(Some),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+            Err(_) => Err(failure),
+        }
+    }
+}
+
+#[derive(Deserialize)]
+struct WorkspaceRunManifest {
+    name: String,
+    #[serde(default)]
+    scripts: BTreeMap<String, String>,
+}
+
+struct RunPolicyInput<'a> {
+    root: &'a Path,
+    selected_package: &'a Path,
+    target: PolicyTarget,
+    operation_key: &'a str,
+    operation: &'a OperationConfig,
+    scripts: &'a BTreeMap<String, String>,
+    package_manager: &'a PackageManagerReport,
+    matrix: &'a AdapterMatrix,
+    node_evidence: Option<&'a RepositoryNodeEvidence>,
+    forwarded_arguments: &'a [String],
+    evidence: &'a mut PlanningEvidence,
+}
+
+#[derive(Deserialize)]
+struct InstalledRunManifest {
+    name: String,
+    version: String,
+}
+
+fn read_node_evidence(
+    evidence: &mut PlanningEvidence,
+) -> Result<Option<RepositoryNodeEvidence>, Reason> {
+    let node_version = evidence.read_optional(".node-version", Reason::ToolVersionUnsupported)?;
+    let nvmrc = evidence.read_optional(".nvmrc", Reason::ToolVersionUnsupported)?;
+    let Some(version) = inspect_node_version(node_version.as_deref(), nvmrc.as_deref())? else {
+        return Ok(None);
+    };
+    let mut files = Vec::new();
+    if node_version.is_some() {
+        files.push(".node-version".to_owned());
+    }
+    if nvmrc.is_some() {
+        files.push(".nvmrc".to_owned());
+    }
+    Ok(Some(RepositoryNodeEvidence { version, files }))
+}
+
+fn build_run_policy(input: RunPolicyInput<'_>) -> Result<OperationPolicy, Reason> {
+    let graph = expand_script_graph(&input.operation.script, input.scripts)?;
+    let mut installed_versions = BTreeMap::new();
+
+    for leaf in &graph.leaves {
+        let initial_executable = leaf
+            .segment
+            .arguments()
+            .first()
+            .ok_or(Reason::ToolUnsupported)?;
+        let wrapper_identity = if matches!(initial_executable.as_str(), "cross-env" | "dotenv") {
+            let package_name = package_for_executable(input.matrix, initial_executable)
+                .map_err(|_| Reason::WrapperUnsupported)?;
+            record_installed_package_for_plan(
+                input.root,
+                input.selected_package,
+                package_name,
+                &mut installed_versions,
+                input.evidence,
+            )?;
+            Some(WrapperIdentity::new(
+                package_name,
+                installed_versions[package_name].clone(),
+            ))
+        } else {
+            None
+        };
+        let unwrapped = unwrap_segment(&leaf.segment, wrapper_identity.as_ref())?;
+        let executable = unwrapped
+            .arguments()
+            .first()
+            .ok_or(Reason::ToolUnsupported)?;
+        let package_name = package_for_executable(input.matrix, executable)?;
+        if package_name == "node" {
+            let node = input.node_evidence.ok_or(Reason::ToolVersionUnsupported)?;
+            installed_versions.insert("node".to_owned(), node.version.0.clone());
+        } else {
+            record_installed_package_for_plan(
+                input.root,
+                input.selected_package,
+                package_name,
+                &mut installed_versions,
+                input.evidence,
+            )?;
+        }
+    }
+
+    let evidence_files = input
+        .evidence
+        .digests
+        .iter()
+        .map(|digest| digest.relative_path().to_owned())
+        .collect::<Vec<_>>();
+    let package_manager_version = Version::parse(&input.package_manager.version)
+        .map_err(|_| Reason::PackageManagerUnsupported)?;
+    build_operation_policy(PolicyInput {
+        target: input.target,
+        operation_key: input.operation_key,
+        operation: input.operation,
+        graph: &graph,
+        matrix: input.matrix,
+        package_manager: input.package_manager.kind,
+        package_manager_version: &package_manager_version,
+        installed_versions: &installed_versions,
+        forwarded_arguments: input.forwarded_arguments,
+        evidence_files: &evidence_files,
+    })
+}
+
+fn record_installed_package_for_plan(
+    root: &Path,
+    selected_package: &Path,
+    package_name: &str,
+    versions: &mut BTreeMap<String, Version>,
+    evidence: &mut PlanningEvidence,
+) -> Result<(), Reason> {
+    if versions.contains_key(package_name) {
+        return Ok(());
+    }
+    let located = resolve_installed_package(root, selected_package, package_name)?;
+    let bytes = evidence.read(&located.evidence_file, Reason::ToolUnsupported)?;
+    let manifest: InstalledRunManifest =
+        serde_json::from_slice(&bytes).map_err(|_| Reason::ToolUnsupported)?;
+    if manifest.name != package_name {
+        return Err(Reason::ToolUnsupported);
+    }
+    let version = Version::parse(&manifest.version).map_err(|_| Reason::ToolVersionUnsupported)?;
+    if version != located.version {
+        return Err(Reason::ToolVersionUnsupported);
+    }
+    versions.insert(manifest.name, version);
+    Ok(())
+}
+
+fn repository_hash(root: &Path) -> [u8; 32] {
+    #[cfg(unix)]
+    let bytes = root.as_os_str().as_bytes();
+    #[cfg(not(unix))]
+    let bytes = root.as_os_str().to_string_lossy().as_bytes();
+    Sha256::digest(bytes).into()
 }
 
 struct RepositoryNodeEvidence {
@@ -683,7 +1124,9 @@ fn repository_io_error(source: io::Error) -> RepositoryError {
 
 #[cfg(test)]
 mod tests {
-    use super::{PackageManagerKind, find_git_root, inspect_repository};
+    use super::{
+        PackageManagerKind, RunSelection, find_git_root, inspect_repository, plan_run, plans_match,
+    };
     use crate::result::Reason;
     use std::{
         fs,
@@ -734,6 +1177,24 @@ mod tests {
             }
             fs::write(path, contents).unwrap();
         }
+
+        fn configured_npm() -> Self {
+            let fixture = Self::git_repo();
+            fixture.write(
+                "package.json",
+                r#"{"name":"fixture","packageManager":"npm@12.0.2","scripts":{"test":"vitest run"}}"#,
+            );
+            fixture.write("package-lock.json", "{}\n");
+            fixture.write(
+                ".agent-lowmem.json",
+                r#"{"version":1,"packageManager":"npm","operations":{"test":{"script":"test","timeoutSeconds":300}}}"#,
+            );
+            fixture.write(
+                "node_modules/vitest/package.json",
+                r#"{"name":"vitest","version":"4.1.11"}"#,
+            );
+            fixture
+        }
     }
 
     impl Drop for Fixture {
@@ -760,6 +1221,174 @@ mod tests {
                 .unwrap()
                 .contains(fixture.path().to_str().unwrap())
         );
+    }
+
+    #[test]
+    fn plans_configured_run_with_exact_evidence() {
+        let fixture = Fixture::configured_npm();
+
+        let plan = plan_run(fixture.path(), &RunSelection::root("test", Vec::new())).unwrap();
+
+        assert_eq!(plan.policy().operation_key, "test");
+        assert!(
+            plan.evidence()
+                .files()
+                .iter()
+                .any(|file| { file.relative_path() == ".agent-lowmem.json" })
+        );
+        assert!(
+            plan.evidence()
+                .files()
+                .iter()
+                .any(|file| { file.relative_path() == "node_modules/vitest/package.json" })
+        );
+    }
+
+    #[test]
+    fn redacted_run_plan_hides_root_scripts_and_forwarded_arguments() {
+        let fixture = Fixture::configured_npm();
+        let secret = "customer-token-123";
+
+        let plan = plan_run(
+            fixture.path(),
+            &RunSelection::root("test", vec![secret.to_owned()]),
+        )
+        .unwrap();
+        let debug = format!("{:?}", plan.redacted());
+
+        assert!(!debug.contains(fixture.path().to_str().unwrap()));
+        assert!(!debug.contains("vitest run"));
+        assert!(!debug.contains(secret));
+        assert!(debug.contains("forwarded_argument_count: 1"));
+    }
+
+    #[test]
+    fn rejects_unconfigured_operations_and_denied_forwarded_arguments() {
+        let fixture = Fixture::configured_npm();
+
+        assert_eq!(
+            plan_run(fixture.path(), &RunSelection::root("build", Vec::new())).unwrap_err(),
+            Reason::OperationUnsupported
+        );
+        assert_eq!(
+            plan_run(
+                fixture.path(),
+                &RunSelection::root("test", vec!["--watch".to_owned()]),
+            )
+            .unwrap_err(),
+            Reason::WatchDenied
+        );
+    }
+
+    #[test]
+    fn plan_comparison_detects_changed_evidence() {
+        let fixture = Fixture::configured_npm();
+        let selection = RunSelection::root("test", Vec::new());
+        let before = plan_run(fixture.path(), &selection).unwrap();
+        fixture.write("package-lock.json", "{\"lockfileVersion\":3}\n");
+        let after = plan_run(fixture.path(), &selection).unwrap();
+
+        assert!(!plans_match(&before, &after));
+    }
+
+    #[test]
+    fn plans_an_exact_configured_workspace() {
+        let fixture = Fixture::git_repo();
+        fixture.write(
+            "package.json",
+            r#"{"name":"root","packageManager":"npm@12.0.2","workspaces":["packages/*"]}"#,
+        );
+        fixture.write("package-lock.json", "{}\n");
+        fixture.write(
+            ".agent-lowmem.json",
+            r#"{"version":1,"packageManager":"npm","workspaces":{"web":{"path":"packages/web","packageName":"@acme/web","operations":{"test":{"script":"test","timeoutSeconds":300}}}}}"#,
+        );
+        fixture.write(
+            "packages/web/package.json",
+            r#"{"name":"@acme/web","scripts":{"test":"vitest run"}}"#,
+        );
+        fixture.write(
+            "node_modules/vitest/package.json",
+            r#"{"name":"vitest","version":"4.1.11"}"#,
+        );
+
+        let plan = plan_run(
+            fixture.path(),
+            &RunSelection::workspace("web", "test", Vec::new()),
+        )
+        .unwrap();
+
+        assert!(matches!(
+            &plan.policy().target,
+            crate::policy::PolicyTarget::Workspace { key, package_name }
+                if key == "web" && package_name == "@acme/web"
+        ));
+        assert!(
+            plan.evidence()
+                .files()
+                .iter()
+                .any(|file| { file.relative_path() == "packages/web/package.json" })
+        );
+    }
+
+    #[test]
+    fn rejects_duplicate_workspace_package_identity() {
+        let fixture = Fixture::git_repo();
+        fixture.write(
+            "package.json",
+            r#"{"name":"root","packageManager":"npm@12.0.2","workspaces":["packages/*"]}"#,
+        );
+        fixture.write("package-lock.json", "{}\n");
+        fixture.write(
+            ".agent-lowmem.json",
+            r#"{"version":1,"packageManager":"npm","workspaces":{"web":{"path":"packages/web","packageName":"@acme/web","operations":{"test":{"script":"test","timeoutSeconds":300}}}}}"#,
+        );
+        for path in ["packages/web/package.json", "packages/copy/package.json"] {
+            fixture.write(
+                path,
+                r#"{"name":"@acme/web","scripts":{"test":"vitest run"}}"#,
+            );
+        }
+
+        assert_eq!(
+            plan_run(
+                fixture.path(),
+                &RunSelection::workspace("web", "test", Vec::new()),
+            )
+            .unwrap_err(),
+            Reason::WorkspaceCardinality
+        );
+    }
+
+    #[test]
+    fn captures_lifecycle_and_wrapper_evidence_without_leaking_wrapper_values() {
+        let fixture = Fixture::configured_npm();
+        fixture.write(
+            "package.json",
+            r#"{"name":"fixture","packageManager":"npm@12.0.2","scripts":{"pretest":"rimraf cache","test":"cross-env PRIVATE_TOKEN=value vitest run"}}"#,
+        );
+        fixture.write(
+            "node_modules/rimraf/package.json",
+            r#"{"name":"rimraf","version":"6.1.3"}"#,
+        );
+        fixture.write(
+            "node_modules/cross-env/package.json",
+            r#"{"name":"cross-env","version":"10.1.0"}"#,
+        );
+
+        let plan = plan_run(fixture.path(), &RunSelection::root("test", Vec::new())).unwrap();
+        let paths = plan
+            .evidence()
+            .files()
+            .iter()
+            .map(|file| file.relative_path())
+            .collect::<Vec<_>>();
+        let debug = format!("{plan:?}");
+
+        assert!(paths.contains(&"node_modules/rimraf/package.json"));
+        assert!(paths.contains(&"node_modules/cross-env/package.json"));
+        assert!(!debug.contains("PRIVATE_TOKEN"));
+        assert!(!debug.contains("value"));
     }
 
     #[test]

@@ -137,7 +137,7 @@ git commit -m "feat: capture exact repository evidence"
 - Consumes: `RunSelection { operation_key, workspace_key, forwarded_arguments }`, `EvidenceReader`, configuration/workspace/adapter modules, and `OperationPolicy`.
 - Produces: `plan_run(start: &Path, selection: &RunSelection) -> Result<RunPlan, Reason>` where `RunPlan` contains private root, typed policy, evidence snapshot, repository hash, and `RunPlan::redacted() -> RedactedRunPlan<'_>`.
 
-- [ ] **Step 1: Write failing run-plan tests**
+- [x] **Step 1: Write failing run-plan tests**
 
 ```rust
 let plan = plan_run(fixture.root(), &RunSelection::root("test", vec![])).unwrap();
@@ -148,15 +148,15 @@ assert!(!format!("{:?}", plan.redacted()).contains(fixture.root().to_str().unwra
 
 Include configured root/workspace selection, forwarded denial, lifecycle evidence, wrapper redaction, duplicate workspace cardinality, and unconfigured operation rejection.
 
-- [ ] **Step 2: Confirm RED**
+- [x] **Step 2: Confirm RED**
 
 Run: `cargo test repository::tests::plans_configured_run -j 1 -- --test-threads=1`
 
-- [ ] **Step 3: Refactor repository reads through `EvidenceReader`**
+- [x] **Step 3: Refactor repository reads through `EvidenceReader`**
 
 Keep `inspect_repository` behavior stable while making `plan_run` use exact bytes and collect every admitted evidence digest. Make `OperationPolicy` fully `Debug + Clone + PartialEq + Eq` through its redacted implementation and expose no raw script body.
 
-- [ ] **Step 4: Add exact replan comparison**
+- [x] **Step 4: Add exact replan comparison**
 
 ```rust
 pub fn plans_match(before: &RunPlan, after: &RunPlan) -> bool {
@@ -166,7 +166,7 @@ pub fn plans_match(before: &RunPlan, after: &RunPlan) -> bool {
 }
 ```
 
-- [ ] **Step 5: Verify and commit**
+- [x] **Step 5: Verify and commit**
 
 Run: `cargo test repository -j 1 -- --test-threads=1`
 

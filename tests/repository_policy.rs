@@ -6,6 +6,8 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
+use agent_lowmem::repository::{RunSelection, plan_run};
+
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 
@@ -98,6 +100,28 @@ fn reports_npm_and_pnpm_root_and_workspace_operations() {
         let output = serde_json::to_string(&report).unwrap();
         assert!(!output.contains(fixture.root.to_str().unwrap()));
     }
+}
+
+#[test]
+fn public_run_plan_is_configured_evidence_backed_and_redacted() {
+    let fixture = RepositoryFixture::from_source("npm-single");
+    fixture.write(
+        ".agent-lowmem.json",
+        r#"{"version":1,"packageManager":"npm","operations":{"test":{"script":"test","timeoutSeconds":300}}}"#,
+    );
+
+    let plan = plan_run(
+        &fixture.root,
+        &RunSelection::root("test", vec!["safe-filter".to_owned()]),
+    )
+    .unwrap();
+    let output = serde_json::to_string(&plan.redacted()).unwrap();
+
+    assert_eq!(plan.policy().operation_key, "test");
+    assert!(output.contains("\"forwardedArgumentCount\":1"));
+    assert!(!output.contains("safe-filter"));
+    assert!(!output.contains(fixture.root.to_str().unwrap()));
+    assert!(!output.contains("vitest run"));
 }
 
 #[test]
