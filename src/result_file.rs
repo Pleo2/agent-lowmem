@@ -1,26 +1,19 @@
 use crate::{
     adapter::ControlDecision,
+    atomic_file::HeldDirectory,
     configuration::valid_relative_path,
     policy::PolicyTarget,
     repository::{PackageManagerReport, RunPlan},
     result::{ExitResult, Origin, Reason},
     supervisor::{CleanupAction, SupervisionReport},
 };
-use rustix::{
-    fs::{AtFlags, FileType, Mode, OFlags, fchmod, openat, renameat, statat, unlinkat},
-    io::Errno,
-};
 use serde::Serialize;
 use std::{
     collections::BTreeSet,
-    fs::File,
-    io::Write,
     path::Path,
-    sync::atomic::{AtomicU64, Ordering},
     time::{SystemTime, UNIX_EPOCH},
 };
 
-static NEXT_TEMPORARY: AtomicU64 = AtomicU64::new(0);
 const MAX_RFC3339_SECONDS: u64 = 253_402_300_799;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -205,7 +198,7 @@ impl RunResultRecord {
 
 #[derive(Debug)]
 pub struct ValidatedResultDestination {
-    parent: File,
+    parent: HeldDirectory,
     file_name: String,
 }
 
@@ -217,29 +210,15 @@ pub fn validate_result_destination(
         return Err(Reason::ManagedFileConflict);
     }
     let components = relative_path.split('/').collect::<Vec<_>>();
-    let mut parent = File::open(root).map_err(|_| Reason::ManagedFileConflict)?;
-    if !parent
-        .metadata()
-        .map_err(|_| Reason::ManagedFileConflict)?
-        .is_dir()
-    {
-        return Err(Reason::ManagedFileConflict);
-    }
+    let mut parent = HeldDirectory::open(root, None)?;
     for component in &components[..components.len() - 1] {
-        let descriptor = openat(
-            &parent,
-            *component,
-            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
-            Mode::empty(),
-        )
-        .map_err(|_| Reason::ManagedFileConflict)?;
-        parent = File::from(descriptor);
+        parent = HeldDirectory::open_child(&parent, component, None)?;
     }
     let file_name = components
         .last()
         .expect("validated non-empty path")
         .to_string();
-    ensure_safe_target(&parent, &file_name)?;
+    parent.ensure_replaceable(&file_name)?;
     Ok(ValidatedResultDestination { parent, file_name })
 }
 
@@ -249,62 +228,10 @@ pub fn write_validated_result_atomic(
 ) -> Result<(), Reason> {
     let mut bytes = serde_json::to_vec_pretty(record).map_err(|_| Reason::InternalError)?;
     bytes.push(b'\n');
-    ensure_safe_target(&destination.parent, &destination.file_name)?;
-
-    let (temporary_name, mut temporary) = create_temporary(&destination.parent)?;
-
-    let write_result = (|| {
-        temporary
-            .write_all(&bytes)
-            .map_err(|_| Reason::InternalError)?;
-        temporary.sync_all().map_err(|_| Reason::InternalError)?;
-        ensure_safe_target(&destination.parent, &destination.file_name)?;
-        renameat(
-            &destination.parent,
-            temporary_name.as_str(),
-            &destination.parent,
-            destination.file_name.as_str(),
-        )
-        .map_err(|_| Reason::InternalError)?;
-        destination
-            .parent
-            .sync_all()
-            .map_err(|_| Reason::InternalError)
-    })();
-
-    if write_result.is_err() {
-        let _ = unlinkat(
-            &destination.parent,
-            temporary_name.as_str(),
-            AtFlags::empty(),
-        );
-    }
-    write_result
-}
-
-fn create_temporary(parent: &File) -> Result<(String, File), Reason> {
-    for _ in 0..16 {
-        let serial = NEXT_TEMPORARY.fetch_add(1, Ordering::Relaxed);
-        let name = format!(".agent-lowmem-result-{}-{serial}.tmp", std::process::id());
-        match openat(
-            parent,
-            name.as_str(),
-            OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC,
-            Mode::RUSR | Mode::WUSR,
-        ) {
-            Ok(descriptor) => {
-                let file = File::from(descriptor);
-                if fchmod(&file, Mode::RUSR | Mode::WUSR).is_err() {
-                    let _ = unlinkat(parent, name.as_str(), AtFlags::empty());
-                    return Err(Reason::InternalError);
-                }
-                return Ok((name, file));
-            }
-            Err(Errno::EXIST) => continue,
-            Err(_) => return Err(Reason::InternalError),
-        }
-    }
-    Err(Reason::InternalError)
+    let expected = destination.parent.precondition(&destination.file_name)?;
+    destination
+        .parent
+        .replace_atomic(&destination.file_name, &expected, &bytes, 0o600)
 }
 
 pub fn write_result_atomic(
@@ -314,15 +241,6 @@ pub fn write_result_atomic(
 ) -> Result<(), Reason> {
     let destination = validate_result_destination(root, relative_path)?;
     write_validated_result_atomic(&destination, record)
-}
-
-fn ensure_safe_target(parent: &File, file_name: &str) -> Result<(), Reason> {
-    match statat(parent, file_name, AtFlags::SYMLINK_NOFOLLOW) {
-        Ok(stat) if FileType::from_raw_mode(stat.st_mode) == FileType::RegularFile => Ok(()),
-        Ok(_) => Err(Reason::ManagedFileConflict),
-        Err(Errno::NOENT) => Ok(()),
-        Err(_) => Err(Reason::ManagedFileConflict),
-    }
 }
 
 fn format_rfc3339_utc(seconds: u64) -> Result<String, Reason> {
@@ -359,7 +277,11 @@ fn civil_from_days(days_since_epoch: i64) -> (i64, i64, i64) {
 mod tests {
     use super::*;
     use crate::repository::{RunSelection, plan_run};
-    use std::{fs, path::PathBuf, sync::atomic::AtomicU64};
+    use std::{
+        fs,
+        path::PathBuf,
+        sync::atomic::{AtomicU64, Ordering},
+    };
 
     #[cfg(unix)]
     use std::os::unix::{fs::PermissionsExt, net::UnixListener};

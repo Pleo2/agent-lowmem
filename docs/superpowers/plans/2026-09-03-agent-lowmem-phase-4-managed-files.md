@@ -563,19 +563,19 @@ impl HeldDirectory {
 }
 ```
 
-- [ ] **Step 1: Add primitive tests** for exclusive unpredictable temporary creation, `0600` mode under umasks `000` and `077`, preservation of no executable bit when replacing an existing regular file, exact-precondition rejection, parent/final symlink swaps, special files, temp cleanup, rename durability, exact remove, and `0700` private directories.
+- [x] **Step 1: Add primitive tests** for exclusive unpredictable temporary creation, `0600` mode under umasks `000` and `077`, preservation of no executable bit when replacing an existing regular file, exact-precondition rejection, parent/final symlink swaps, special files, temp cleanup, rename durability, exact remove, and `0700` private directories.
 
-- [ ] **Step 2: Confirm RED**
+- [x] **Step 2: Confirm RED**
 
 Run: `cargo test atomic_file::tests -j 1 -- --test-threads=1`
 
 Run: `cargo test --test atomic_managed_files -j 1 -- --test-threads=1`
 
-- [ ] **Step 3: Implement the reusable primitive** with existing `rustix` APIs only: `openat`, `statat`, `renameat`, `unlinkat`, `fchmod`, descriptor metadata, file/directory `sync_all`, and exclusive no-follow temporary opens.
+- [x] **Step 3: Implement the reusable primitive** with existing `rustix` APIs only: `openat`, `statat`, `renameat`, `unlinkat`, `fchmod`, descriptor metadata, file/directory `sync_all`, and exclusive no-follow temporary opens.
 
-- [ ] **Step 4: Refactor Phase 3 result writes onto the primitive** while preserving its public API, schema, output precedence, and tests. Do not change result-file permissions or semantics.
+- [x] **Step 4: Refactor Phase 3 result writes onto the primitive** while preserving its public API, schema, output precedence, and tests. Do not change result-file permissions or semantics.
 
-- [ ] **Step 5: Run focused regressions**
+- [x] **Step 5: Run focused regressions**
 
 Run: `cargo test atomic_file -j 1 -- --test-threads=1`
 
@@ -583,7 +583,7 @@ Run: `cargo test result_file -j 1 -- --test-threads=1`
 
 Run: `cargo test --test result_file -j 1 -- --test-threads=1`
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add src/atomic_file.rs src/result_file.rs tests/atomic_managed_files.rs
