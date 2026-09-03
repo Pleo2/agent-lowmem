@@ -1,6 +1,7 @@
 use crate::{
     host::{HostReport, HostSource, inspect_host},
     lock::{LockProbe, LockStatus},
+    managed_files::inspect_restore_identity,
     repository::{OperationStatus, RepositoryReport, inspect_repository},
     result::Reason,
     run::runtime_directory,
@@ -8,8 +9,8 @@ use crate::{
 use serde::Serialize;
 use std::path::Path;
 
-const PHASE: &str = "managed-runner";
-const NEXT_ACTION: &str = "design the managed policy-file workflow";
+const PHASE: &str = "managed-files";
+const NEXT_ACTION: &str = "design the release and distribution phase";
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -19,6 +20,8 @@ pub struct DoctorReport {
     pub host: HostReport,
     pub repository: RepositoryReport,
     pub managed_runs_available: bool,
+    pub init_available: bool,
+    pub restore_available: bool,
     pub lock_status: LockStatus,
     pub next_action: &'static str,
 }
@@ -27,12 +30,18 @@ pub fn inspect_doctor(source: &impl HostSource, start: &Path) -> DoctorReport {
     let lock_status = runtime_directory()
         .map(|runtime| LockProbe::probe(&runtime))
         .unwrap_or(LockStatus::InvalidRecord);
-    assemble_doctor_report(inspect_host(source), inspect_repository(start), lock_status)
+    assemble_doctor_report(
+        inspect_host(source),
+        inspect_repository(start),
+        inspect_restore_identity(start),
+        lock_status,
+    )
 }
 
 pub fn assemble_doctor_report(
     host: HostReport,
     repository: RepositoryReport,
+    restore_identity_present: bool,
     lock_status: LockStatus,
 ) -> DoctorReport {
     let managed_runs_available = host.runtime_supported
@@ -43,12 +52,20 @@ pub fn assemble_doctor_report(
             .operations
             .iter()
             .any(|operation| operation.configured && operation.status == OperationStatus::Runnable);
+    let init_available = host.runtime_supported
+        && repository.git_root_available
+        && repository.root_package_available
+        && repository.package_manager.is_some()
+        && repository.failure_reason.is_none();
+    let restore_available = repository.git_root_available && restore_identity_present;
     DoctorReport {
         schema_version: 1,
         phase: PHASE,
         host,
         repository,
         managed_runs_available,
+        init_available,
+        restore_available,
         lock_status,
         next_action: NEXT_ACTION,
     }
@@ -62,6 +79,8 @@ pub fn render_human(report: &DoctorReport) -> String {
          Repository available: {}\n\
          Phase: {}\n\
          Managed runs: {}\n\
+         Init: {}\n\
+         Restore: {}\n\
          Operation lock: {}\n\
          Next action: {}",
         yes_no(report.host.runtime_supported),
@@ -73,6 +92,8 @@ pub fn render_human(report: &DoctorReport) -> String {
         } else {
             "unavailable"
         },
+        availability(report.init_available),
+        availability(report.restore_available),
         lock_status_token(report.lock_status),
         report.next_action,
     );
@@ -104,6 +125,10 @@ pub fn render_human(report: &DoctorReport) -> String {
         }
     }
     output
+}
+
+const fn availability(value: bool) -> &'static str {
+    if value { "available" } else { "unavailable" }
 }
 
 const fn lock_status_token(status: LockStatus) -> &'static str {
@@ -163,17 +188,20 @@ mod tests {
         let report = assemble_doctor_report(
             reference_host(),
             outside_repository(),
+            false,
             LockStatus::Available,
         );
         let json = serde_json::to_value(&report).unwrap();
 
         assert_eq!(json["schemaVersion"], 1);
-        assert_eq!(json["phase"], "managed-runner");
+        assert_eq!(json["phase"], "managed-files");
         assert_eq!(json["managedRunsAvailable"], false);
+        assert_eq!(json["initAvailable"], false);
+        assert_eq!(json["restoreAvailable"], false);
         assert_eq!(json["lockStatus"], "available");
         assert_eq!(
             json["nextAction"],
-            "design the managed policy-file workflow"
+            "design the release and distribution phase"
         );
         assert!(json.get("timestamp").is_none());
     }
@@ -199,7 +227,7 @@ mod tests {
             failure_reason: None,
         };
 
-        let report = assemble_doctor_report(reference_host(), repository, LockStatus::Held);
+        let report = assemble_doctor_report(reference_host(), repository, false, LockStatus::Held);
 
         assert!(report.managed_runs_available);
         assert_eq!(report.lock_status, LockStatus::Held);
@@ -210,6 +238,7 @@ mod tests {
         let report = assemble_doctor_report(
             reference_host(),
             outside_repository(),
+            false,
             LockStatus::Available,
         );
         let output = render_human(&report);
@@ -219,7 +248,50 @@ mod tests {
         assert!(output.contains("Performance validated: yes"));
         assert!(output.contains("Repository available: no"));
         assert!(output.contains("Managed runs: unavailable"));
+        assert!(output.contains("Init: unavailable"));
+        assert!(output.contains("Restore: unavailable"));
         assert!(output.contains("Operation lock: available"));
         assert!(!output.contains('/'));
+    }
+
+    #[test]
+    fn managed_file_capabilities_follow_the_host_repository_and_identity_table() {
+        let repository = RepositoryReport {
+            git_root_available: true,
+            root_package_available: true,
+            package_manager: Some(PackageManagerReport {
+                kind: PackageManagerKind::Npm,
+                version: "12.0.2".to_owned(),
+            }),
+            operations: Vec::new(),
+            failure_reason: None,
+        };
+
+        let supported = assemble_doctor_report(
+            reference_host(),
+            repository.clone(),
+            false,
+            LockStatus::Available,
+        );
+        assert!(supported.init_available);
+        assert!(!supported.restore_available);
+
+        let mut unsupported_host = reference_host();
+        unsupported_host.runtime_supported = false;
+        unsupported_host.performance_validated = false;
+        unsupported_host.failure_reason = Some(Reason::HostUnsupported);
+        let restorable =
+            assemble_doctor_report(unsupported_host, repository, true, LockStatus::Available);
+        assert!(!restorable.init_available);
+        assert!(restorable.restore_available);
+
+        let outside = assemble_doctor_report(
+            reference_host(),
+            outside_repository(),
+            true,
+            LockStatus::Available,
+        );
+        assert!(!outside.init_available);
+        assert!(!outside.restore_available);
     }
 }

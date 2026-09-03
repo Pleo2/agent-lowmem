@@ -41,6 +41,7 @@ fn doctor_warm_cache_median_stays_within_phase_one_budget() {
         .output()
         .unwrap();
     assert!(warmup.status.success());
+    assert_phase_four(&warmup.stdout);
 
     let mut elapsed_milliseconds = Vec::with_capacity(20);
     for _ in 0..20 {
@@ -52,6 +53,7 @@ fn doctor_warm_cache_median_stays_within_phase_one_budget() {
             .unwrap();
         let elapsed = started.elapsed().as_secs_f64() * 1_000.0;
         assert!(output.status.success());
+        assert_phase_four(&output.stdout);
         elapsed_milliseconds.push(elapsed);
     }
 
@@ -82,6 +84,7 @@ fn repository_doctor_stays_within_phase_two_budget() {
         .output()
         .unwrap();
     assert!(warmup.status.success());
+    assert_phase_four(&warmup.stdout);
 
     let mut elapsed_milliseconds = Vec::with_capacity(20);
     for _ in 0..20 {
@@ -93,6 +96,7 @@ fn repository_doctor_stays_within_phase_two_budget() {
             .unwrap();
         let elapsed = started.elapsed().as_secs_f64() * 1_000.0;
         assert!(output.status.success());
+        assert_phase_four(&output.stdout);
         elapsed_milliseconds.push(elapsed);
     }
 
@@ -108,6 +112,14 @@ fn repository_doctor_stays_within_phase_two_budget() {
         p95 <= 500.0,
         "repository doctor p95 {p95:.3} ms exceeded 500 ms"
     );
+}
+
+fn assert_phase_four(stdout: &[u8]) {
+    let output = String::from_utf8_lossy(stdout);
+    assert!(output.contains("Phase: managed-files"));
+    assert!(output.contains("Init:"));
+    assert!(output.contains("Restore:"));
+    assert!(output.contains("Next action: design the release and distribution phase"));
 }
 
 fn copy_tree(source: &Path, destination: &Path) {

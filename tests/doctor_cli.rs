@@ -85,8 +85,14 @@ fn doctor_json_exits_zero_and_redacts_paths_and_environment_values() {
     let stdout = String::from_utf8(output.stdout).unwrap();
     let report: serde_json::Value = serde_json::from_str(&stdout).unwrap();
     assert_eq!(report["schemaVersion"], 1);
-    assert_eq!(report["phase"], "managed-runner");
+    assert_eq!(report["phase"], "managed-files");
     assert!(report["managedRunsAvailable"].is_boolean());
+    assert_eq!(report["initAvailable"], false);
+    assert_eq!(report["restoreAvailable"], false);
+    assert_eq!(
+        report["nextAction"],
+        "design the release and distribution phase"
+    );
     assert!(matches!(
         report["lockStatus"].as_str(),
         Some("available" | "held" | "orphan-recovery" | "invalid-record")
@@ -109,7 +115,21 @@ fn human_doctor_reports_capabilities_and_phase_limit() {
     assert!(stdout.contains("Performance validated:"));
     assert!(stdout.contains("Repository available:"));
     assert!(stdout.contains("Managed runs: unavailable"));
+    assert!(stdout.contains("Init: unavailable"));
+    assert!(stdout.contains("Restore: unavailable"));
     assert!(stdout.contains("Operation lock:"));
+}
+
+#[test]
+fn doctor_reports_restore_for_a_conflicting_managed_identity() {
+    let fixture = Fixture::git_repo();
+    fixture.write("AGENTS.md", "<!-- agent-lowmem:start\n");
+
+    let output = agent_lowmem(fixture.path(), &["doctor", "--json"]);
+
+    assert_eq!(output.status.code(), Some(0));
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(report["restoreAvailable"], true);
 }
 
 #[test]
@@ -195,17 +215,27 @@ fn zero_child_sentinels_detect_attempts_but_doctor_starts_none() {
     assert_eq!(self_check.status.code(), Some(97));
     assert!(marker.exists());
     fs::remove_file(&marker).unwrap();
+    let before = snapshot(&fixture.root);
+    let isolated_temporary = fixture.path().join("isolated-tmp");
+    fs::create_dir(&isolated_temporary).unwrap();
 
     let doctor = Command::new(env!("CARGO_BIN_EXE_agent-lowmem"))
         .arg("doctor")
         .current_dir(fixture.path())
         .env("PATH", isolated_path)
+        .env("TMPDIR", &isolated_temporary)
         .env("AGENT_LOWMEM_SENTINEL_MARKER", &marker)
         .output()
         .unwrap();
 
     assert_eq!(doctor.status.code(), Some(0));
     assert!(!marker.exists());
+    assert!(!isolated_temporary.join("agent-lowmem-v1").exists());
+    assert!(!fixture.path().join(".git/agent-lowmem").exists());
+    let mut expected = before;
+    expected.push(("isolated-tmp".to_owned(), Vec::new()));
+    expected.sort_by(|left, right| left.0.cmp(&right.0));
+    assert_eq!(snapshot(&fixture.root), expected);
 }
 
 #[test]
@@ -252,4 +282,29 @@ fn collect_rust_files(directory: &Path, files: &mut Vec<PathBuf>) {
             files.push(path);
         }
     }
+}
+
+fn snapshot(root: &Path) -> Vec<(String, Vec<u8>)> {
+    fn collect(root: &Path, current: &Path, entries: &mut Vec<(String, Vec<u8>)>) {
+        for entry in fs::read_dir(current).unwrap() {
+            let entry = entry.unwrap();
+            let path = entry.path();
+            let relative = path
+                .strip_prefix(root)
+                .unwrap()
+                .to_string_lossy()
+                .into_owned();
+            if entry.file_type().unwrap().is_dir() {
+                entries.push((relative, Vec::new()));
+                collect(root, &path, entries);
+            } else {
+                entries.push((relative, fs::read(path).unwrap()));
+            }
+        }
+    }
+
+    let mut entries = Vec::new();
+    collect(root, root, &mut entries);
+    entries.sort_by(|left, right| left.0.cmp(&right.0));
+    entries
 }

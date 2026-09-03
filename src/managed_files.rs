@@ -603,6 +603,33 @@ pub fn execute_restore(
     execute_restore_core(start, runtime, request, || {}, &NoTransactionFaults)
 }
 
+pub fn inspect_restore_identity(start: &Path) -> bool {
+    let Ok(Some(root)) = find_git_repository(start) else {
+        return false;
+    };
+    if symlink_metadata(root.root().join(CONFIGURATION_PATH)).is_ok()
+        || symlink_metadata(root.metadata().join(JOURNAL_PATH)).is_ok()
+    {
+        return true;
+    }
+
+    let agents_path = root.root().join(AGENTS_PATH);
+    match symlink_metadata(&agents_path) {
+        Err(error) if error.kind() == ErrorKind::NotFound => false,
+        Err(_) => true,
+        Ok(_) => HeldDirectory::open(root.root(), None)
+            .and_then(|repository| repository.read_optional(AGENTS_PATH, MAX_AGENTS_BYTES))
+            .map(|agents| match agents {
+                OptionalFile::Absent => false,
+                OptionalFile::Regular { bytes, .. } => !matches!(
+                    inspect_agents(Some(bytes)),
+                    Ok(AgentsDocumentState::NoBlock { .. })
+                ),
+            })
+            .unwrap_or(true),
+    }
+}
+
 pub fn execute_init(
     source: &impl HostSource,
     start: &Path,
