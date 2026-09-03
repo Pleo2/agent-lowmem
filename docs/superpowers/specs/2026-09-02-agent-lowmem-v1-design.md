@@ -834,6 +834,15 @@ agent-lowmem init
 
 GitHub Releases publish a notarized archive. The fixed release order is compile, test, strip, Developer ID sign, signature verification, notarization, checksum, and provenance. Nothing mutates the binary after signing.
 
+The public-release presentation gate also requires:
+
+- an evidence-backed benchmark table from the exact reference host, with its methodology and limitations;
+- release notes, checksums, provenance, and installation instructions that resolve to the same signed binary;
+- a social preview for `agentlowmem.dev` that does not add a browser runtime request;
+- landing-page terminal output updated from the real release CLI rather than an illustrative contract;
+- live `docs` and `benchmarks` routes only when their content exists, with `blog` remaining optional;
+- automated landing checks that reject production JavaScript or external runtime dependencies and enforce its compressed-size and accessibility budgets.
+
 The portable `agent-lowmem` npm root package has no `os` or `cpu` restriction and declares platform packages such as `@agent-lowmem/darwin-arm64` as optional dependencies. The platform package contains the same signed binary and declares its operating-system and CPU restriction.
 
 The launcher resolves the installed platform package, starts its binary with inherited stdio, and returns the child status. It never downloads a binary, runs a lifecycle hook, or builds native code during installation. Unsupported platforms install successfully and receive a clear error only when execution is attempted.
