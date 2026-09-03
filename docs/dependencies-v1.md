@@ -8,6 +8,7 @@
 | `serde_json 1.0` | Parse manifests and emit JSON | No script evaluation | MIT OR Apache-2.0 |
 | `semver 1.0` | Validate declared package-manager versions | Data-only parsing | MIT OR Apache-2.0 |
 | `sha2 0.11.0` (no default features) | SHA-256 over exact repository evidence bytes | Pure-Rust hashing only; no network or secret storage | MIT OR Apache-2.0 |
+| `signal-hook 0.4.4` (`iterator` only) | Blocking delivery of `SIGINT`, `SIGTERM`, and `SIGHUP` to one listener thread | Safe iterator and close handle only; no async adapter, extended signal info, or arbitrary callback | MIT OR Apache-2.0 |
 | `sysctl 0.7.1` | Safe macOS sysctl reads | Read-only host inspector | MIT |
 
 `Cargo.lock` is the authority for exact resolved versions. Every direct dependency addition requires purpose, source/API review, license review, one-worker tests, and a separate commit. Production dependencies may not add a network client, async runtime, daemon, shell evaluator, or lifecycle installer.
@@ -15,6 +16,8 @@
 `sha2 0.11.0` declares Rust 1.85 and adds only the RustCrypto digest stack with default allocation and OID features disabled. `rustix 1.1.4` declares Rust 1.63; this checkpoint enables `std`, `fs`, and `process` so evidence paths can be opened below a directory descriptor with `O_NOFOLLOW`, the effective UID can be checked, and a single process group can be probed without enumeration.
 
 `libproc 0.14.11` declares Rust 1.72 and is scoped to macOS. Its production dependency delta is `errno` and the already-present `libc`; its build uses `bindgen 0.72.1` with the runtime feature and therefore adds build-only Clang/loading dependencies. Agent Lowmem calls only the safe one-PID `pidrusage::<RUsageInfoV4>` API and reads `ri_proc_start_abstime`; broad process, path, file-descriptor, and command inspection APIs are outside the boundary.
+
+`signal-hook 0.4.4` declares Rust 1.66. Default features are disabled and only the synchronous `iterator` feature is enabled; its production delta is `signal-hook-registry` plus the already-present `libc`. The iterator uses a self-pipe, may coalesce repeated non-realtime signals, and its close handle wakes a blocking listener so the thread can be joined. Agent Lowmem installs only `SIGINT`, `SIGTERM`, and `SIGHUP`; it does not use async adapters, extended signal metadata, or unsafe low-level registration. The dependency-only stripped release remained `650624` bytes before its API was referenced; the final linked delta is measured at the Phase 3 gate.
 
 ## Phase 1 Development Baseline — 2026-09-02
 
