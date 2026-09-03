@@ -154,7 +154,7 @@ fn validate_operations(
         .collect()
 }
 
-fn valid_key(value: &str) -> bool {
+pub(crate) fn valid_key(value: &str) -> bool {
     let bytes = value.as_bytes();
     !bytes.is_empty()
         && bytes.len() <= 32

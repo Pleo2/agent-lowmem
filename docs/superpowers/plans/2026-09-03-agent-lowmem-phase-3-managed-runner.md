@@ -35,7 +35,7 @@
 - Consumes: existing `configuration::valid_key` and `configuration::valid_relative_path` made crate-visible without changing their grammar.
 - Produces: `RunRequest { operation_key, workspace_key, json_file, forwarded_arguments }` and `CliCommand::Run(RunRequest)`; tests destructure the enum directly and require no convenience method.
 
-- [ ] **Step 1: Write failing table-driven parser tests**
+- [x] **Step 1: Write failing table-driven parser tests**
 
 ```rust
 assert_eq!(parse(["run", "test"]).unwrap(), CliCommand::Run(RunRequest {
@@ -50,17 +50,17 @@ assert_eq!(parse(["run", "test", "--workspace", "web", "--workspace", "api"]).un
 assert_eq!(parse(["run", "test", "--unknown"]).unwrap_err().reason(), Reason::InvalidCli);
 ```
 
-- [ ] **Step 2: Run the focused test and confirm RED**
+- [x] **Step 2: Run the focused test and confirm RED**
 
 Run: `cargo test cli::tests::parses_strict_run_requests -j 1 -- --test-threads=1`
 
 Expected: compile failure because `RunRequest` and `CliCommand::Run` do not exist.
 
-- [ ] **Step 3: Implement the minimal state parser**
+- [x] **Step 3: Implement the minimal state parser**
 
 Parse exactly one operation, optional single `--workspace`, optional single `--json-file`, and one exact forwarding boundary. Reject non-UTF-8 and NUL-bearing values. Keep `run` structural errors at `invalid-cli`; policy validation remains outside this module.
 
-- [ ] **Step 4: Run focused and complete tests**
+- [x] **Step 4: Run focused and complete tests**
 
 Run: `cargo test cli::tests -j 1 -- --test-threads=1`
 
@@ -68,7 +68,7 @@ Run: `cargo test -j 1 -- --test-threads=1`
 
 Expected: all tests pass; the main binary still reports `operation-unsupported` until Task 8 dispatches `Run`.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/cli.rs src/configuration.rs

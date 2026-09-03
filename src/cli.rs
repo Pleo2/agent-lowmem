@@ -1,9 +1,21 @@
-use crate::result::Reason;
+use crate::{
+    configuration::{valid_key, valid_relative_path},
+    result::Reason,
+};
 use std::ffi::OsString;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CliCommand {
     Doctor { json: bool },
+    Run(RunRequest),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RunRequest {
+    pub operation_key: String,
+    pub workspace_key: Option<String>,
+    pub json_file: Option<String>,
+    pub forwarded_arguments: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -32,11 +44,61 @@ where
         [command, flag] if command == "doctor" && flag == "--json" => {
             Ok(CliCommand::Doctor { json: true })
         }
-        [command, ..] if command == "run" => Err(CliError {
-            reason: Reason::OperationUnsupported,
-        }),
+        [command, rest @ ..] if command == "run" => parse_run(rest),
         _ => Err(invalid_cli()),
     }
+}
+
+fn parse_run(tokens: &[String]) -> Result<CliCommand, CliError> {
+    let Some((operation_key, options)) = tokens.split_first() else {
+        return Err(invalid_cli());
+    };
+    if !valid_key(operation_key) {
+        return Err(invalid_cli());
+    }
+
+    let mut workspace_key = None;
+    let mut json_file = None;
+    let mut forwarded_arguments = Vec::new();
+    let mut index = 0;
+    while index < options.len() {
+        match options[index].as_str() {
+            "--" => {
+                forwarded_arguments.extend_from_slice(&options[index + 1..]);
+                break;
+            }
+            "--workspace" if workspace_key.is_none() => {
+                let value = options.get(index + 1).ok_or_else(invalid_cli)?;
+                if !valid_key(value) {
+                    return Err(invalid_cli());
+                }
+                workspace_key = Some(value.clone());
+                index += 2;
+            }
+            "--json-file" if json_file.is_none() => {
+                let value = options.get(index + 1).ok_or_else(invalid_cli)?;
+                if !valid_relative_path(value) {
+                    return Err(invalid_cli());
+                }
+                json_file = Some(value.clone());
+                index += 2;
+            }
+            _ => return Err(invalid_cli()),
+        }
+    }
+    if forwarded_arguments
+        .iter()
+        .any(|argument| argument.contains('\0'))
+    {
+        return Err(invalid_cli());
+    }
+
+    Ok(CliCommand::Run(RunRequest {
+        operation_key: operation_key.clone(),
+        workspace_key,
+        json_file,
+        forwarded_arguments,
+    }))
 }
 
 const fn invalid_cli() -> CliError {
@@ -47,11 +109,11 @@ const fn invalid_cli() -> CliError {
 
 #[cfg(test)]
 mod tests {
-    use super::{CliCommand, parse};
+    use super::{CliCommand, RunRequest, parse};
     use crate::result::Reason;
 
     #[test]
-    fn parses_only_the_phase_two_doctor_forms() {
+    fn parses_doctor_forms() {
         assert_eq!(
             parse(["doctor"]).unwrap(),
             CliCommand::Doctor { json: false }
@@ -63,10 +125,6 @@ mod tests {
         assert_eq!(
             parse(["--json", "doctor"]).unwrap_err().reason(),
             Reason::InvalidCli
-        );
-        assert_eq!(
-            parse(["run", "test"]).unwrap_err().reason(),
-            Reason::OperationUnsupported
         );
     }
 
@@ -81,6 +139,67 @@ mod tests {
             Reason::InvalidCli
         );
         assert_eq!(parse(["unknown"]).unwrap_err().reason(), Reason::InvalidCli);
+    }
+
+    #[test]
+    fn parses_strict_run_requests() {
+        assert_eq!(
+            parse(["run", "test"]).unwrap(),
+            CliCommand::Run(RunRequest {
+                operation_key: "test".to_owned(),
+                workspace_key: None,
+                json_file: None,
+                forwarded_arguments: Vec::new(),
+            })
+        );
+        assert_eq!(
+            parse(["run", "test", "--workspace", "web", "--", "src/a.test.ts",]).unwrap(),
+            CliCommand::Run(RunRequest {
+                operation_key: "test".to_owned(),
+                workspace_key: Some("web".to_owned()),
+                json_file: None,
+                forwarded_arguments: vec!["src/a.test.ts".to_owned()],
+            })
+        );
+        assert_eq!(
+            parse([
+                "run",
+                "build",
+                "--json-file",
+                ".agent-lowmem-result.json",
+                "--workspace",
+                "web",
+            ])
+            .unwrap(),
+            CliCommand::Run(RunRequest {
+                operation_key: "build".to_owned(),
+                workspace_key: Some("web".to_owned()),
+                json_file: Some(".agent-lowmem-result.json".to_owned()),
+                forwarded_arguments: Vec::new(),
+            })
+        );
+    }
+
+    #[test]
+    fn rejects_ambiguous_run_requests() {
+        for arguments in [
+            vec!["run"],
+            vec!["run", "Test"],
+            vec!["run", "test", "--workspace"],
+            vec!["run", "test", "--workspace", "web", "--workspace", "api"],
+            vec![
+                "run",
+                "test",
+                "--json-file",
+                "result.json",
+                "--json-file",
+                "other.json",
+            ],
+            vec!["run", "test", "--unknown"],
+            vec!["run", "test", "--", "ok", "bad\0argument"],
+        ] {
+            assert_eq!(parse(arguments).unwrap_err().reason(), Reason::InvalidCli);
+        }
     }
 
     #[cfg(unix)]

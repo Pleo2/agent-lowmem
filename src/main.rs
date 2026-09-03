@@ -31,6 +31,10 @@ fn run() -> i32 {
 
     match command {
         CliCommand::Doctor { json } => run_doctor(json),
+        CliCommand::Run(_) => emit_failure(
+            ExitResult::new(Origin::Preflight, 64, Reason::OperationUnsupported),
+            "managed runs are unavailable in the repository-policy checkpoint",
+        ),
     }
 }
 
