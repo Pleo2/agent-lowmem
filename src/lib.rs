@@ -14,6 +14,7 @@ pub mod package_manager;
 pub mod policy;
 pub mod process;
 pub mod repository;
+pub mod restoration;
 pub mod result;
 pub mod result_file;
 pub mod run;

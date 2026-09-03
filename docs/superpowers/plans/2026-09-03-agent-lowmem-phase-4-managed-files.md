@@ -496,23 +496,23 @@ pub(crate) fn transaction_digest(manifest: &RestorationManifest)
     -> Result<[u8; 32], Reason>;
 ```
 
-- [ ] **Step 1: Define exact schema fields** for prepared/applied state, ownership, immediate-before managed bytes or absence, target managed bytes/digests, stable baseline, span placement, inserted separator, prefix/suffix digests, and destination actions. Prohibit absolute repository paths and external/manual bytes by construction.
+- [x] **Step 1: Define exact schema fields** for prepared/applied state, ownership, immediate-before managed bytes or absence, target managed bytes/digests, stable baseline, span placement, inserted separator, prefix/suffix digests, and destination actions. Prohibit absolute repository paths and external/manual bytes by construction.
 
 The journal is stored only at resolved metadata identity `agent-lowmem/restoration-v1.json`. `repositorySha256` hashes the canonical repository identity; `transactionSha256` hashes canonical transaction content and is never a random or public transaction ID.
 
-- [ ] **Step 2: Add positive and negative schema tests** for both states, invalid modes/owners, bad digests, impossible spans, oversized bytes, recursive previous state beyond one entry, unknown fields, and non-canonical serialization.
+- [x] **Step 2: Add positive and negative schema tests** for both states, invalid modes/owners, bad digests, impossible spans, oversized bytes, recursive previous state beyond one entry, unknown fields, and non-canonical serialization.
 
-- [ ] **Step 3: Confirm RED**
+- [x] **Step 3: Confirm RED**
 
-Run: `cargo test --test restoration_manifest -j 1 -- --test-threads=1`
+Run: `cargo test restoration -j 1 -- --test-threads=1`
 
-- [ ] **Step 4: Implement strict typed parsing and deterministic serialization**
+- [x] **Step 4: Implement strict typed parsing and deterministic serialization**
 
 Use two-space JSON, LF, one final newline, closed enums, and a transaction digest calculated from a canonical digest-input representation with the `transactionSha256` field excluded.
 
-- [ ] **Step 5: Add privacy tests** proving the journal cannot serialize an absolute root, username, environment value, manual configuration bytes, or `AGENTS.md` prefix/suffix bytes.
+- [x] **Step 5: Add privacy tests** proving the journal cannot serialize an absolute root, username, environment value, manual configuration bytes, or `AGENTS.md` prefix/suffix bytes.
 
-- [ ] **Step 6: Verify and commit**
+- [x] **Step 6: Verify and commit**
 
 Run: `cargo test restoration -j 1 -- --test-threads=1`
 

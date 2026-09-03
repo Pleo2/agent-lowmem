@@ -1,0 +1,164 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentlowmem.dev/schema/restoration-manifest-v1.json",
+  "title": "Agent Lowmem private restoration manifest v1",
+  "$ref": "#/$defs/manifest",
+  "$defs": {
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "mode": { "type": "integer", "minimum": 0, "maximum": 438 },
+    "ownedBytes": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["bytes", "sha256"],
+      "properties": {
+        "bytes": { "type": "string" },
+        "sha256": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "priorManagedState": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["state"],
+          "properties": { "state": { "const": "absent" } }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["state", "owned"],
+          "properties": {
+            "state": { "const": "bytes" },
+            "owned": { "$ref": "#/$defs/ownedBytes" }
+          }
+        }
+      ]
+    },
+    "configuration": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "ownership",
+        "action",
+        "immediateBefore",
+        "target",
+        "stableBaseline",
+        "beforeMode",
+        "targetMode",
+        "externalSha256"
+      ],
+      "properties": {
+        "ownership": { "enum": ["managed", "external"] },
+        "action": { "enum": ["create", "replace", "remove", "unchanged", "preserve"] },
+        "immediateBefore": {
+          "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/priorManagedState" }]
+        },
+        "target": {
+          "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/ownedBytes" }]
+        },
+        "stableBaseline": {
+          "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/priorManagedState" }]
+        },
+        "beforeMode": {
+          "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/mode" }]
+        },
+        "targetMode": {
+          "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/mode" }]
+        },
+        "externalSha256": {
+          "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/sha256" }]
+        }
+      }
+    },
+    "span": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["start", "end"],
+      "properties": {
+        "start": { "type": "integer", "minimum": 0, "maximum": 1048576 },
+        "end": { "type": "integer", "minimum": 1, "maximum": 1048576 }
+      }
+    },
+    "agentsPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "ownership",
+        "action",
+        "documentWasAbsent",
+        "immediateBefore",
+        "target",
+        "stableBaseline",
+        "beforeMode",
+        "targetMode",
+        "managedSpan",
+        "insertedSeparator",
+        "prefixSha256",
+        "suffixSha256"
+      ],
+      "properties": {
+        "ownership": { "const": "managed" },
+        "action": { "enum": ["create", "replace", "remove", "unchanged"] },
+        "documentWasAbsent": { "type": "boolean" },
+        "immediateBefore": { "$ref": "#/$defs/priorManagedState" },
+        "target": {
+          "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/ownedBytes" }]
+        },
+        "stableBaseline": { "$ref": "#/$defs/priorManagedState" },
+        "beforeMode": {
+          "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/mode" }]
+        },
+        "targetMode": {
+          "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/mode" }]
+        },
+        "managedSpan": { "$ref": "#/$defs/span" },
+        "insertedSeparator": { "enum": ["", "\n", "\n\n"] },
+        "prefixSha256": { "$ref": "#/$defs/sha256" },
+        "suffixSha256": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "manifestFields": {
+      "type": "object",
+      "required": [
+        "schemaVersion",
+        "formatVersion",
+        "state",
+        "repositorySha256",
+        "transactionSha256",
+        "configuration",
+        "agentsPolicy"
+      ],
+      "properties": {
+        "schemaVersion": { "const": 1 },
+        "formatVersion": { "const": 1 },
+        "state": { "enum": ["prepared", "applied"] },
+        "repositorySha256": { "$ref": "#/$defs/sha256" },
+        "transactionSha256": { "$ref": "#/$defs/sha256" },
+        "configuration": { "$ref": "#/$defs/configuration" },
+        "agentsPolicy": { "$ref": "#/$defs/agentsPolicy" }
+      }
+    },
+    "priorApplied": {
+      "allOf": [
+        { "$ref": "#/$defs/manifestFields" },
+        {
+          "type": "object",
+          "properties": { "state": { "const": "applied" } }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "manifest": {
+      "allOf": [
+        { "$ref": "#/$defs/manifestFields" },
+        {
+          "type": "object",
+          "properties": {
+            "previousApplied": { "$ref": "#/$defs/priorApplied" }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    }
+  }
+}
