@@ -1,12 +1,13 @@
 use crate::{
     host::{HostReport, HostSource, inspect_host},
     repository::{RepositoryReport, inspect_repository},
+    result::Reason,
 };
 use serde::Serialize;
 use std::path::Path;
 
-const PHASE: &str = "native-foundation";
-const NEXT_ACTION: &str = "implement repository policy before enabling managed runs";
+const PHASE: &str = "repository-policy";
+const NEXT_ACTION: &str = "design the managed runner from verified operation policies";
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -33,20 +34,48 @@ pub fn assemble_doctor_report(host: HostReport, repository: RepositoryReport) ->
 }
 
 pub fn render_human(report: &DoctorReport) -> String {
-    format!(
+    let mut output = format!(
         "Agent Lowmem doctor\n\
          Runtime supported: {}\n\
          Performance validated: {}\n\
          Repository available: {}\n\
          Phase: {}\n\
-         Managed runs: unavailable in Phase 1\n\
+         Managed runs: unavailable in Phase 2\n\
          Next action: {}",
         yes_no(report.host.runtime_supported),
         yes_no(report.host.performance_validated),
         yes_no(report.repository.git_root_available),
         report.phase,
         report.next_action,
-    )
+    );
+    if report.repository.operations.is_empty() {
+        output.push_str("\nRepository operations: none");
+    } else {
+        output.push_str("\nRepository operations:");
+        for operation in &report.repository.operations {
+            let target = operation.workspace_key.as_deref().unwrap_or("root");
+            let reason = operation.reason.map(Reason::as_str).unwrap_or("compatible");
+            let mode = if operation.configured {
+                "configured"
+            } else {
+                "candidate"
+            };
+            output.push_str(&format!(
+                "\n- {target}:{} [{}] {} ({reason})",
+                operation.operation_key,
+                mode,
+                match operation.status {
+                    crate::repository::OperationStatus::Runnable => "runnable",
+                    crate::repository::OperationStatus::Rejected => "rejected",
+                }
+            ));
+            if !operation.disclosures.is_empty() {
+                output.push_str(" disclosures=");
+                output.push_str(&operation.disclosures.join(","));
+            }
+        }
+    }
+    output
 }
 
 const fn yes_no(value: bool) -> &'static str {
@@ -79,20 +108,21 @@ mod tests {
             git_root_available: false,
             root_package_available: false,
             package_manager: None,
+            operations: Vec::new(),
             failure_reason: Some(Reason::RepositoryUnsupported),
         }
     }
 
     #[test]
-    fn assembles_the_private_native_foundation_checkpoint() {
+    fn assembles_the_private_repository_policy_checkpoint() {
         let report = assemble_doctor_report(reference_host(), outside_repository());
         let json = serde_json::to_value(&report).unwrap();
 
         assert_eq!(json["schemaVersion"], 1);
-        assert_eq!(json["phase"], "native-foundation");
+        assert_eq!(json["phase"], "repository-policy");
         assert_eq!(
             json["nextAction"],
-            "implement repository policy before enabling managed runs"
+            "design the managed runner from verified operation policies"
         );
         assert!(json.get("timestamp").is_none());
     }
@@ -106,7 +136,7 @@ mod tests {
         assert!(output.contains("Runtime supported: yes"));
         assert!(output.contains("Performance validated: yes"));
         assert!(output.contains("Repository available: no"));
-        assert!(output.contains("Managed runs: unavailable in Phase 1"));
+        assert!(output.contains("Managed runs: unavailable in Phase 2"));
         assert!(!output.contains('/'));
     }
 }

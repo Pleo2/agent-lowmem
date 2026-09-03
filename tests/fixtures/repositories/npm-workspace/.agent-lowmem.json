@@ -1,0 +1,1 @@
+{"$schema":"https://agentlowmem.dev/schema/v1.json","version":1,"packageManager":"npm","workspaces":{"web":{"path":"apps/web","packageName":"@acme/web","operations":{"test":{"script":"test","timeoutSeconds":600}}}}}

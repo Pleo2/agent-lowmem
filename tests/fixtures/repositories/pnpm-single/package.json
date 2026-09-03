@@ -1,0 +1,1 @@
+{"name":"pnpm-single","private":true,"packageManager":"pnpm@11.25.0","scripts":{"test":"node --test"}}

@@ -24,7 +24,7 @@ fn run() -> i32 {
             };
             return emit_failure(
                 ExitResult::new(Origin::Preflight, code, reason),
-                "requested command is unavailable in the native-foundation checkpoint",
+                "requested command is unavailable in the repository-policy checkpoint",
             );
         }
     };

@@ -51,7 +51,7 @@ mod tests {
     use crate::result::Reason;
 
     #[test]
-    fn parses_only_the_phase_one_doctor_forms() {
+    fn parses_only_the_phase_two_doctor_forms() {
         assert_eq!(
             parse(["doctor"]).unwrap(),
             CliCommand::Doctor { json: false }

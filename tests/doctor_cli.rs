@@ -85,7 +85,7 @@ fn doctor_json_exits_zero_and_redacts_paths_and_environment_values() {
     let stdout = String::from_utf8(output.stdout).unwrap();
     let report: serde_json::Value = serde_json::from_str(&stdout).unwrap();
     assert_eq!(report["schemaVersion"], 1);
-    assert_eq!(report["phase"], "native-foundation");
+    assert_eq!(report["phase"], "repository-policy");
     assert!(!stdout.contains(fixture.path().to_str().unwrap()));
     assert!(!stdout.contains(&secret));
     assert!(output.stderr.is_empty());
@@ -103,7 +103,7 @@ fn human_doctor_reports_capabilities_and_phase_limit() {
     assert!(stdout.contains("Runtime supported:"));
     assert!(stdout.contains("Performance validated:"));
     assert!(stdout.contains("Repository available:"));
-    assert!(stdout.contains("Managed runs: unavailable in Phase 1"));
+    assert!(stdout.contains("Managed runs: unavailable in Phase 2"));
 }
 
 #[test]
@@ -120,7 +120,7 @@ fn unavailable_run_exits_64_without_starting_a_repository_child() {
     let fixture = Fixture::git_repo();
     fixture.write(
         "package.json",
-        r#"{"packageManager":"npm@11.11.0","scripts":{"test":"touch child-started"}}"#,
+        r#"{"packageManager":"npm@12.0.2","scripts":{"test":"touch child-started"}}"#,
     );
     fixture.write("package-lock.json", "{}\n");
 
@@ -139,7 +139,7 @@ fn unavailable_run_exits_64_without_starting_a_repository_child() {
 #[test]
 fn zero_child_sentinels_detect_attempts_but_doctor_starts_none() {
     let fixture = Fixture::git_repo();
-    fixture.write("package.json", r#"{"packageManager":"pnpm@10.33.0"}"#);
+    fixture.write("package.json", r#"{"packageManager":"pnpm@11.25.0"}"#);
     fixture.write("pnpm-lock.yaml", "lockfileVersion: '9.0'\n");
     let sentinel_dir = fixture.path().join("sentinels");
     fs::create_dir(&sentinel_dir).unwrap();
