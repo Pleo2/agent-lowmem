@@ -164,7 +164,7 @@ fn valid_key(value: &str) -> bool {
             .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || *byte == b'-')
 }
 
-fn valid_relative_path(value: &str) -> bool {
+pub(crate) fn valid_relative_path(value: &str) -> bool {
     !value.is_empty()
         && !value.starts_with('/')
         && !value.ends_with('/')
@@ -174,7 +174,7 @@ fn valid_relative_path(value: &str) -> bool {
             .all(|component| !component.is_empty() && component != "." && component != "..")
 }
 
-fn valid_package_name(value: &str) -> bool {
+pub(crate) fn valid_package_name(value: &str) -> bool {
     if value.len() > 214
         || value.contains("...")
         || value
