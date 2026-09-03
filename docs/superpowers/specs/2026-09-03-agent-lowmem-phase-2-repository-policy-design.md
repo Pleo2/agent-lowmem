@@ -46,6 +46,8 @@ Phase 2 preserves these non-negotiable constraints from Revision 6:
 
 The inspector resolves tool and wrapper package manifests only through lexical package resolution rooted in the selected package directory and Git root. It follows no symlink outside the canonical Git root. Missing, ambiguous, escaped, malformed, or unsupported evidence produces a typed rejection and never falls back to executing Node resolution.
 
+The Node test runner is the one non-package adapter. Its exact version evidence comes from a root `.node-version` or `.nvmrc` containing only one exact semantic version, with an optional leading `v`. When both files exist they must normalize to the same version. A range, alias, extra token, disagreement, or missing declaration makes the Node test-runner adapter unsupported; inspection never executes `node --version`.
+
 ### 4.2 Configuration
 
 `src/configuration.rs` owns the strict `.agent-lowmem.json` data model and semantic validation. JSON decoding rejects unknown fields. The accepted top-level fields are exactly `$schema`, `version`, `packageManager`, `operations`, and `workspaces`.
@@ -74,10 +76,10 @@ Schema errors return `invalid-config` with code 2. Repository-semantic incompati
 `src/workspace.rs` maps supported declarations to exact canonical package identities. The first implementation deliberately supports a narrow, common subset:
 
 - npm `workspaces` as an array of strings or an object containing only a `packages` array;
-- pnpm `pnpm-workspace.yaml` with one top-level `packages` sequence of scalar strings;
+- pnpm `pnpm-workspace.yaml` with a required top-level `packages` sequence of scalar strings and optional scalar `scriptShell`, `shellEmulator`, and `enablePrePostScripts` keys;
 - declaration patterns made of safe repository-relative path segments, where `*` is allowed only as an entire segment;
 - literal paths and single-segment wildcard expansion through sorted directory reads;
-- exclusion patterns, `**`, partial-segment wildcards, brace expansion, YAML aliases, anchors, tags, flow collections, multiline scalars, additional pnpm workspace keys, and all unknown syntax are unsupported.
+- exclusion patterns, `**`, partial-segment wildcards, brace expansion, YAML aliases, anchors, tags, flow collections, multiline scalars, additional pnpm workspace keys, and all unknown syntax are unsupported. `enablePrePostScripts` is parsed only to validate syntax and never removes declared lifecycle phases from classification.
 
 The pnpm parser is a purpose-built parser for this declared subset, not a general YAML parser. It accepts UTF-8, blank lines, comments, and consistently indented dash entries below `packages:`. Single- and double-quoted entries use the same non-interpolating literal restrictions defined by this design. A comment marker inside a quoted scalar remains literal; an unquoted comment begins at `#`.
 
@@ -87,7 +89,7 @@ A configured workspace succeeds only when its normalized path and exact package 
 
 ### 4.4 Package-manager semantics
 
-`src/package_manager.rs` owns matrix-declared npm/pnpm repository configuration and package-manager argument-array construction. It reads only files inside the Git root. For the initial adapters this means the root `.npmrc` and `pnpm-workspace.yaml`; it never queries npm/pnpm and never reads machine, user, global, or environment configuration.
+`src/package_manager.rs` owns matrix-declared npm/pnpm repository configuration and package-manager argument-array construction. It reads only parsed evidence from files inside the Git root. For the initial adapters this means npm's root `.npmrc` and pnpm's already parsed `pnpm-workspace.yaml`; it never queries npm/pnpm and never reads machine, user, global, or environment configuration.
 
 The `.npmrc` reader recognizes UTF-8 line-oriented `key=value` entries, blank lines, and full-line comments. It compares normalized relevant keys case-sensitively with the matrix declaration. A relevant value containing interpolation or substitution is unsupported. An explicit script shell other than `/bin/sh`, or an enabled pnpm shell emulator, returns `script-shell-unsupported`. Unrelated well-formed keys are ignored and never copied into output.
 
