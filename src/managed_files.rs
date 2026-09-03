@@ -105,12 +105,14 @@ pub struct ManagedFilesPlan {
     agents_policy: PlannedFile,
     journal: Option<PlannedJournal>,
     effective_config: Option<AgentLowmemConfig>,
+    human_diff: Option<String>,
     report: ManagedFilesReport,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ManagedFilesOutcome {
     pub report: ManagedFilesReport,
+    pub human_diff: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -191,6 +193,28 @@ impl ManagedFilesPlan {
     }
 }
 
+pub fn render_managed_human(outcome: &ManagedFilesOutcome) -> String {
+    let mut output = format!(
+        "Managed files: {} ({})\n",
+        outcome.report.command.as_str(),
+        outcome.report.outcome.as_str()
+    );
+    if let Some(diff) = &outcome.human_diff {
+        output.push('\n');
+        output.push_str(diff);
+    }
+    if !outcome.report.issues.is_empty() {
+        use std::fmt::Write as _;
+        writeln!(
+            output,
+            "\nManual review required: {} managed-file issue(s).",
+            outcome.report.issues.len()
+        )
+        .expect("writing to a String cannot fail");
+    }
+    output
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ManagedFilesFailure {
     reason: Reason,
@@ -229,6 +253,15 @@ pub enum ManagedCommand {
     Restore,
 }
 
+impl ManagedCommand {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Init => "init",
+            Self::Restore => "restore",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum ManagedOutcome {
@@ -239,6 +272,20 @@ pub enum ManagedOutcome {
     RecoveryRequired,
     Conflict,
     Failed,
+}
+
+impl ManagedOutcome {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Planned => "planned",
+            Self::Applied => "applied",
+            Self::Restored => "restored",
+            Self::Unchanged => "unchanged",
+            Self::RecoveryRequired => "recovery-required",
+            Self::Conflict => "conflict",
+            Self::Failed => "failed",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -577,6 +624,7 @@ fn execute_init_core(
         return ManagedFilesOutcome {
             report: planning_failure(*request, Reason::HostUnsupported, ManifestState::Absent)
                 .report,
+            human_diff: None,
         };
     }
     match inspect_prepared_recovery(start) {
@@ -636,6 +684,7 @@ fn execute_init_core(
                     Err(failure) => {
                         return ManagedFilesOutcome {
                             report: failure.report,
+                            human_diff: None,
                         };
                     }
                 };
@@ -652,6 +701,7 @@ fn execute_init_core(
             return apply_init_transaction(&recovered_plan, faults)
                 .map(|()| ManagedFilesOutcome {
                     report: recovered_plan.report.clone(),
+                    human_diff: recovered_plan.human_diff.clone(),
                 })
                 .unwrap_or_else(|reason| managed_failure_outcome(&recovered_plan, reason));
         }
@@ -666,12 +716,14 @@ fn execute_init_core(
         Err(failure) => {
             return ManagedFilesOutcome {
                 report: failure.report,
+                human_diff: None,
             };
         }
     };
     if request.dry_run {
         return ManagedFilesOutcome {
             report: plan_before.report.clone(),
+            human_diff: plan_before.human_diff.clone(),
         };
     }
 
@@ -702,6 +754,7 @@ fn execute_init_core(
     match apply_init_transaction(&plan_after, faults) {
         Ok(()) => ManagedFilesOutcome {
             report: plan_after.report.clone(),
+            human_diff: plan_after.human_diff.clone(),
         },
         Err(reason) => managed_failure_outcome(&plan_after, reason),
     }
@@ -788,12 +841,14 @@ fn execute_restore_core(
         Err(failure) => {
             return ManagedFilesOutcome {
                 report: failure.report,
+                human_diff: None,
             };
         }
     };
     if request.dry_run {
         return ManagedFilesOutcome {
             report: plan_before.report.clone(),
+            human_diff: plan_before.human_diff.clone(),
         };
     }
     let record = match restore_lease_record(&plan_before.root, "restore") {
@@ -815,6 +870,7 @@ fn execute_restore_core(
     apply_restore_transaction(&plan_after, faults)
         .map(|()| ManagedFilesOutcome {
             report: plan_after.report.clone(),
+            human_diff: plan_after.human_diff.clone(),
         })
         .unwrap_or_else(|reason| managed_failure_outcome(&plan_after, reason))
 }
@@ -829,6 +885,7 @@ fn execute_restore_locked(
         Err(failure) => {
             return ManagedFilesOutcome {
                 report: failure.report,
+                human_diff: None,
             };
         }
     };
@@ -842,6 +899,7 @@ fn execute_restore_locked(
     apply_restore_transaction(&after, faults)
         .map(|()| ManagedFilesOutcome {
             report: after.report.clone(),
+            human_diff: after.human_diff.clone(),
         })
         .unwrap_or_else(|reason| managed_failure_outcome(&after, reason))
 }
@@ -1354,6 +1412,12 @@ fn plan_restore_inner(start: &Path, request: RestoreRequest) -> Result<ManagedFi
     } else {
         ManagedOutcome::Restored
     };
+    let human_diff = render_plan_diff(
+        ManagedCommand::Restore,
+        &configuration,
+        &agents_policy,
+        restore_manifest.as_ref(),
+    )?;
     let report = ManagedFilesReport::new(
         ManagedCommand::Restore,
         request.dry_run,
@@ -1375,6 +1439,7 @@ fn plan_restore_inner(start: &Path, request: RestoreRequest) -> Result<ManagedFi
         agents_policy,
         journal: restore_manifest,
         effective_config: None,
+        human_diff,
         report,
     })
 }
@@ -1928,6 +1993,12 @@ fn plan_init_inner(start: &Path, request: InitRequest) -> Result<ManagedFilesPla
         issues,
         manifest_state,
     )?;
+    let human_diff = render_plan_diff(
+        ManagedCommand::Init,
+        &configuration,
+        &agents_policy,
+        Some(&journal),
+    )?;
     Ok(ManagedFilesPlan {
         command: ManagedCommand::Init,
         request: ManagedRequest::Init(request),
@@ -1938,6 +2009,7 @@ fn plan_init_inner(start: &Path, request: InitRequest) -> Result<ManagedFilesPla
         agents_policy,
         journal: Some(journal),
         effective_config: Some(effective_config),
+        human_diff,
         report,
     })
 }
@@ -1953,6 +2025,7 @@ pub(crate) fn managed_plans_match(before: &ManagedFilesPlan, after: &ManagedFile
         && before.agents_policy == after.agents_policy
         && before.journal == after.journal
         && before.effective_config == after.effective_config
+        && before.human_diff == after.human_diff
         && before.report == after.report
 }
 
@@ -2374,6 +2447,136 @@ fn file_report(identity: ManagedIdentity, file: &PlannedFile) -> ManagedFileRepo
     }
 }
 
+fn render_plan_diff(
+    command: ManagedCommand,
+    configuration: &PlannedFile,
+    agents_policy: &PlannedFile,
+    journal: Option<&PlannedJournal>,
+) -> Result<Option<String>, Reason> {
+    let mut output = String::new();
+    if configuration.ownership == Ownership::Managed && is_mutating_action(configuration.action) {
+        append_unified_fragment(
+            &mut output,
+            CONFIGURATION_PATH,
+            optional_bytes(&configuration.before).unwrap_or_default(),
+            configuration.target.as_deref().unwrap_or_default(),
+            optional_bytes(&configuration.before).is_some(),
+            configuration.target.is_some(),
+            1,
+            1,
+        )?;
+    }
+
+    if is_mutating_action(agents_policy.action) {
+        let restoration = journal
+            .map(|journal| &journal.prepared.agents_policy)
+            .ok_or(Reason::InternalError)?;
+        let immediate = match &restoration.immediate_before {
+            PriorManagedState::Absent => &[][..],
+            PriorManagedState::Bytes(bytes) => bytes.bytes.as_slice(),
+        };
+        let mut old_owned = Vec::new();
+        let new_owned = match command {
+            ManagedCommand::Init => {
+                old_owned.extend_from_slice(immediate);
+                restoration
+                    .target
+                    .as_ref()
+                    .map(|target| target.bytes.as_slice())
+                    .unwrap_or_default()
+            }
+            ManagedCommand::Restore => {
+                old_owned.extend_from_slice(&restoration.inserted_separator);
+                old_owned.extend_from_slice(immediate);
+                &[][..]
+            }
+        };
+        let owned_start = (restoration.managed_span.start as usize).saturating_sub(
+            if command == ManagedCommand::Restore {
+                restoration.inserted_separator.len()
+            } else {
+                0
+            },
+        );
+        let document = optional_bytes(&agents_policy.before).unwrap_or_default();
+        let line = 1 + document
+            .get(..owned_start.min(document.len()))
+            .unwrap_or_default()
+            .iter()
+            .filter(|byte| **byte == b'\n')
+            .count();
+        append_unified_fragment(
+            &mut output,
+            AGENTS_PATH,
+            &old_owned,
+            new_owned,
+            optional_bytes(&agents_policy.before).is_some(),
+            agents_policy.target.is_some(),
+            line,
+            line,
+        )?;
+    }
+    Ok((!output.is_empty()).then_some(output))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn append_unified_fragment(
+    output: &mut String,
+    identity: &str,
+    old: &[u8],
+    new: &[u8],
+    old_document_exists: bool,
+    new_document_exists: bool,
+    old_line: usize,
+    new_line: usize,
+) -> Result<(), Reason> {
+    let old = std::str::from_utf8(old).map_err(|_| Reason::InternalError)?;
+    let new = std::str::from_utf8(new).map_err(|_| Reason::InternalError)?;
+    if !output.is_empty() {
+        output.push('\n');
+    }
+    let old_label = if old_document_exists {
+        format!("a/{identity}")
+    } else {
+        "/dev/null".to_owned()
+    };
+    let new_label = if new_document_exists {
+        format!("b/{identity}")
+    } else {
+        "/dev/null".to_owned()
+    };
+    writeln!(output, "--- {old_label}").map_err(|_| Reason::InternalError)?;
+    writeln!(output, "+++ {new_label}").map_err(|_| Reason::InternalError)?;
+    writeln!(
+        output,
+        "@@ -{},{} +{},{} @@",
+        if old.is_empty() { 0 } else { old_line },
+        line_count(old),
+        if new.is_empty() { 0 } else { new_line },
+        line_count(new)
+    )
+    .map_err(|_| Reason::InternalError)?;
+    append_diff_lines(output, '-', old);
+    append_diff_lines(output, '+', new);
+    Ok(())
+}
+
+fn line_count(value: &str) -> usize {
+    value.bytes().filter(|byte| *byte == b'\n').count()
+        + usize::from(!value.is_empty() && !value.ends_with('\n'))
+}
+
+fn append_diff_lines(output: &mut String, prefix: char, value: &str) {
+    for line in value.split_inclusive('\n') {
+        output.push(prefix);
+        output.push_str(line);
+    }
+    if !value.is_empty() && !value.ends_with('\n') {
+        output.push('\n');
+        output.push_str("\\ No newline at end of file\n");
+    }
+}
+
 fn destination_action(action: ManagedAction) -> DestinationAction {
     match action {
         ManagedAction::Create => DestinationAction::Create,
@@ -2510,6 +2713,7 @@ fn restore_recovery_required_outcome(request: RestoreRequest) -> ManagedFilesOut
     );
     ManagedFilesOutcome {
         report: failure.report,
+        human_diff: None,
     }
 }
 
@@ -2520,6 +2724,7 @@ fn restore_recovery_failure_outcome(
 ) -> ManagedFilesOutcome {
     ManagedFilesOutcome {
         report: restore_planning_failure(request, reason, manifest_state).report,
+        human_diff: None,
     }
 }
 
@@ -2531,6 +2736,7 @@ fn recovery_required_outcome(request: InitRequest) -> ManagedFilesOutcome {
     );
     ManagedFilesOutcome {
         report: failure.report,
+        human_diff: None,
     }
 }
 
@@ -2563,7 +2769,10 @@ fn recovery_failure_outcome(
         manifest_state,
     )
     .expect("recovery failure reports are internally valid");
-    ManagedFilesOutcome { report }
+    ManagedFilesOutcome {
+        report,
+        human_diff: None,
+    }
 }
 
 fn inspect_manifest_state(start: &Path) -> ManifestState {
@@ -2657,7 +2866,10 @@ fn unchanged_outcome(plan: &ManagedFilesPlan) -> ManagedFilesOutcome {
         journal.action = ManagedAction::Unchanged;
         journal.target_sha256 = journal.before_sha256.clone();
     }
-    ManagedFilesOutcome { report }
+    ManagedFilesOutcome {
+        report,
+        human_diff: None,
+    }
 }
 
 fn managed_failure_outcome(plan: &ManagedFilesPlan, reason: Reason) -> ManagedFilesOutcome {
@@ -2676,7 +2888,10 @@ fn managed_failure_outcome(plan: &ManagedFilesPlan, reason: Reason) -> ManagedFi
         code: 70,
         reason: Reason::InternalError,
     });
-    ManagedFilesOutcome { report }
+    ManagedFilesOutcome {
+        report,
+        human_diff: None,
+    }
 }
 
 fn unix_seconds_now() -> Result<u64, Reason> {

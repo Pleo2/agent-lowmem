@@ -122,19 +122,28 @@ fn invalid_arguments_exit_two() {
 }
 
 #[test]
-fn managed_file_commands_remain_unavailable_before_orchestration() {
-    let fixture = Fixture::empty();
+fn managed_file_commands_are_dispatched_by_the_cli() {
+    let unsupported = Fixture::empty();
+    let init = agent_lowmem(unsupported.path(), &["init", "--dry-run", "--json"]);
+    assert_eq!(init.status.code(), Some(64));
+    assert!(init.stdout.starts_with(b"{"));
+    assert_eq!(
+        String::from_utf8(init.stderr).unwrap().lines().last(),
+        Some(
+            "agent-lowmem: managed-files command=init outcome=failed code=64 reason=repository-unsupported"
+        )
+    );
 
-    for arguments in [["init", "--dry-run"], ["restore", "--force-managed-block"]] {
-        let output = agent_lowmem(fixture.path(), &arguments);
-
-        assert_eq!(output.status.code(), Some(64));
-        assert!(output.stdout.is_empty());
-        assert_eq!(
-            String::from_utf8(output.stderr).unwrap().lines().last(),
-            Some("agent-lowmem: result origin=preflight code=64 reason=operation-unsupported")
-        );
-    }
+    let repository = Fixture::git_repo();
+    let restore = agent_lowmem(repository.path(), &["restore", "--dry-run", "--json"]);
+    assert_eq!(restore.status.code(), Some(0));
+    assert!(restore.stdout.starts_with(b"{"));
+    assert_eq!(
+        String::from_utf8(restore.stderr).unwrap().lines().last(),
+        Some(
+            "agent-lowmem: managed-files command=restore outcome=unchanged code=0 reason=completed"
+        )
+    );
 }
 
 #[test]

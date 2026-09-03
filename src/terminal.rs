@@ -1,4 +1,4 @@
-use crate::result::ExitResult;
+use crate::{managed_files::ManagedFilesReport, result::ExitResult};
 
 const WORDMARK: &str = "agent_lowmem";
 const RESET: &str = "\u{1b}[0m";
@@ -68,6 +68,16 @@ pub fn stable_result_line(result: ExitResult) -> String {
     )
 }
 
+pub fn stable_managed_files_line(report: &ManagedFilesReport) -> String {
+    format!(
+        "agent-lowmem: managed-files command={} outcome={} code={} reason={}",
+        report.command.as_str(),
+        report.outcome.as_str(),
+        report.result.code,
+        report.result.reason.as_str()
+    )
+}
+
 fn interpolate_color(position: f64) -> [u8; 3] {
     let upper = GRADIENT_STOPS
         .iter()
@@ -90,7 +100,35 @@ fn interpolate_color(position: f64) -> [u8; 3] {
 
 #[cfg(test)]
 mod tests {
-    use super::{TerminalCapabilities, render_wordmark};
+    use super::{TerminalCapabilities, render_wordmark, stable_managed_files_line};
+    use crate::{
+        managed_files::{
+            ManagedCommand, ManagedFilesReport, ManagedOutcome, ManagedResult, ManifestState,
+        },
+        result::Reason,
+    };
+
+    #[test]
+    fn managed_files_line_is_stable_plain_text() {
+        let report = ManagedFilesReport::new(
+            ManagedCommand::Init,
+            false,
+            ManagedOutcome::Applied,
+            ManagedResult::new(0, Reason::Completed).unwrap(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            ManifestState::Applied,
+        )
+        .unwrap();
+
+        assert_eq!(
+            stable_managed_files_line(&report),
+            "agent-lowmem: managed-files command=init outcome=applied code=0 reason=completed"
+        );
+        assert!(!stable_managed_files_line(&report).contains('\u{1b}'));
+    }
 
     #[test]
     fn renders_the_exact_brand_gradient_with_an_immediate_reset_per_character() {
