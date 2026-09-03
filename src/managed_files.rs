@@ -1,9 +1,10 @@
 use crate::{
     agents_policy::{
-        AgentsDocumentState, MAX_AGENTS_BYTES, inspect_agents, plan_agents_edit, render_policy_body,
+        AgentsDocumentState, MAX_AGENTS_BYTES, inspect_agents, inspect_agents_forced,
+        plan_agents_edit, render_policy_body,
     },
     atomic_file::{FilePrecondition, HeldDirectory, OptionalFile, read_optional_bounded},
-    cli::InitRequest,
+    cli::{InitRequest, RestoreRequest},
     configuration::{
         AgentLowmemConfig, CANONICAL_OPERATIONS, MAX_CONFIG_WORKSPACES, OperationConfig,
         WorkspaceConfig, parse_config, valid_key, valid_package_name, valid_relative_path,
@@ -30,7 +31,8 @@ use sha2::{Digest, Sha256};
 use std::{
     collections::{BTreeMap, BTreeSet},
     fmt::{self, Write as _},
-    fs::File,
+    fs::{File, symlink_metadata},
+    io::ErrorKind,
     path::Path,
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -68,19 +70,41 @@ struct PlannedFile {
 struct PlannedJournal {
     before: OptionalFile,
     prepared: RestorationManifest,
-    applied: RestorationManifest,
+    applied: Option<RestorationManifest>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ManagedRequest {
+    Init(InitRequest),
+    Restore(RestoreRequest),
+}
+
+impl ManagedRequest {
+    const fn dry_run(self) -> bool {
+        match self {
+            Self::Init(request) => request.dry_run,
+            Self::Restore(request) => request.dry_run,
+        }
+    }
+
+    const fn json(self) -> bool {
+        match self {
+            Self::Init(request) => request.json,
+            Self::Restore(request) => request.json,
+        }
+    }
 }
 
 pub struct ManagedFilesPlan {
     command: ManagedCommand,
-    request: InitRequest,
+    request: ManagedRequest,
     root: GitRepository,
     repository_hash: [u8; 32],
     evidence: EvidenceSnapshot,
     configuration: PlannedFile,
     agents_policy: PlannedFile,
-    journal: PlannedJournal,
-    effective_config: AgentLowmemConfig,
+    journal: Option<PlannedJournal>,
+    effective_config: Option<AgentLowmemConfig>,
     report: ManagedFilesReport,
 }
 
@@ -124,8 +148,8 @@ impl fmt::Debug for ManagedFilesPlan {
         formatter
             .debug_struct("ManagedFilesPlan")
             .field("command", &self.command)
-            .field("dry_run", &self.request.dry_run)
-            .field("json", &self.request.json)
+            .field("dry_run", &self.request.dry_run())
+            .field("json", &self.request.json())
             .field("root_resolved", &self.root.root().is_absolute())
             .field("repository_sha256", &hex_digest(&self.repository_hash))
             .field("evidence_file_count", &self.evidence.files().len())
@@ -133,7 +157,10 @@ impl fmt::Debug for ManagedFilesPlan {
             .field("agents_policy_action", &self.agents_policy.action)
             .field(
                 "journal_present",
-                &optional_bytes(&self.journal.before).is_some(),
+                &self
+                    .journal
+                    .as_ref()
+                    .is_some_and(|journal| optional_bytes(&journal.before).is_some()),
             )
             .field("report", &self.report)
             .finish_non_exhaustive()
@@ -146,7 +173,9 @@ impl ManagedFilesPlan {
     }
 
     pub fn effective_configuration(&self) -> &AgentLowmemConfig {
-        &self.effective_config
+        self.effective_config
+            .as_ref()
+            .expect("only init plans expose an effective configuration")
     }
 
     pub fn evidence_files(&self) -> Vec<&str> {
@@ -511,6 +540,22 @@ fn plan_init_supported(
         .map_err(|reason| planning_failure(*request, reason, inspect_manifest_state(start)))
 }
 
+pub fn plan_restore(
+    start: &Path,
+    request: &RestoreRequest,
+) -> Result<ManagedFilesPlan, ManagedFilesFailure> {
+    plan_restore_inner(start, *request)
+        .map_err(|reason| restore_planning_failure(*request, reason, inspect_manifest_state(start)))
+}
+
+pub fn execute_restore(
+    start: &Path,
+    runtime: &Path,
+    request: &RestoreRequest,
+) -> ManagedFilesOutcome {
+    execute_restore_core(start, runtime, request, || {}, &NoTransactionFaults)
+}
+
 pub fn execute_init(
     source: &impl HostSource,
     start: &Path,
@@ -662,6 +707,163 @@ fn execute_init_core(
     }
 }
 
+fn execute_restore_core(
+    start: &Path,
+    runtime: &Path,
+    request: &RestoreRequest,
+    post_lock_hook: impl FnOnce(),
+    faults: &impl TransactionFaults,
+) -> ManagedFilesOutcome {
+    match inspect_prepared_recovery(start) {
+        Ok(Some(_)) if request.dry_run => return restore_recovery_required_outcome(*request),
+        Ok(Some(recovery_before)) => {
+            let record = match restore_lease_record(&recovery_before.root, "restore") {
+                Ok(record) => record,
+                Err(reason) => {
+                    return restore_recovery_failure_outcome(
+                        *request,
+                        reason,
+                        ManifestState::Prepared,
+                    );
+                }
+            };
+            let _lease = match UserLease::acquire(runtime, record) {
+                Ok(lease) => lease,
+                Err(reason) => {
+                    return restore_recovery_failure_outcome(
+                        *request,
+                        reason,
+                        ManifestState::Prepared,
+                    );
+                }
+            };
+            post_lock_hook();
+            let recovery_after = match inspect_prepared_recovery(recovery_before.root.root()) {
+                Ok(Some(recovery)) if recovery == recovery_before => recovery,
+                Ok(_) | Err(_) => {
+                    return restore_recovery_failure_outcome(
+                        *request,
+                        Reason::EvidenceChanged,
+                        ManifestState::Prepared,
+                    );
+                }
+            };
+            let repository = match HeldDirectory::open(recovery_after.root.root(), None) {
+                Ok(directory) => directory,
+                Err(reason) => {
+                    return restore_recovery_failure_outcome(
+                        *request,
+                        reason,
+                        ManifestState::Prepared,
+                    );
+                }
+            };
+            let metadata = match HeldDirectory::open(recovery_after.root.metadata(), None) {
+                Ok(directory) => directory,
+                Err(reason) => {
+                    return restore_recovery_failure_outcome(
+                        *request,
+                        reason,
+                        ManifestState::Prepared,
+                    );
+                }
+            };
+            if let Err(reason) = recover_prepared(&repository, &metadata, &recovery_after.plan) {
+                return restore_recovery_failure_outcome(*request, reason, ManifestState::Prepared);
+            }
+            return execute_restore_locked(recovery_after.root.root(), request, faults);
+        }
+        Ok(None) => {}
+        Err(reason) => {
+            return restore_recovery_failure_outcome(
+                *request,
+                reason,
+                inspect_manifest_state(start),
+            );
+        }
+    }
+
+    let plan_before = match plan_restore(start, request) {
+        Ok(plan) => plan,
+        Err(failure) => {
+            return ManagedFilesOutcome {
+                report: failure.report,
+            };
+        }
+    };
+    if request.dry_run {
+        return ManagedFilesOutcome {
+            report: plan_before.report.clone(),
+        };
+    }
+    let record = match restore_lease_record(&plan_before.root, "restore") {
+        Ok(record) => record,
+        Err(reason) => return managed_failure_outcome(&plan_before, reason),
+    };
+    let _lease = match UserLease::acquire(runtime, record) {
+        Ok(lease) => lease,
+        Err(reason) => return managed_failure_outcome(&plan_before, reason),
+    };
+    post_lock_hook();
+    let plan_after = match plan_restore(plan_before.root.root(), request) {
+        Ok(plan) if managed_plans_match(&plan_before, &plan) => plan,
+        Ok(_) | Err(_) => return managed_failure_outcome(&plan_before, Reason::EvidenceChanged),
+    };
+    if plan_is_unchanged(&plan_after) {
+        return unchanged_outcome(&plan_after);
+    }
+    apply_restore_transaction(&plan_after, faults)
+        .map(|()| ManagedFilesOutcome {
+            report: plan_after.report.clone(),
+        })
+        .unwrap_or_else(|reason| managed_failure_outcome(&plan_after, reason))
+}
+
+fn execute_restore_locked(
+    start: &Path,
+    request: &RestoreRequest,
+    faults: &impl TransactionFaults,
+) -> ManagedFilesOutcome {
+    let before = match plan_restore(start, request) {
+        Ok(plan) => plan,
+        Err(failure) => {
+            return ManagedFilesOutcome {
+                report: failure.report,
+            };
+        }
+    };
+    let after = match plan_restore(before.root.root(), request) {
+        Ok(plan) if managed_plans_match(&before, &plan) => plan,
+        Ok(_) | Err(_) => return managed_failure_outcome(&before, Reason::EvidenceChanged),
+    };
+    if plan_is_unchanged(&after) {
+        return unchanged_outcome(&after);
+    }
+    apply_restore_transaction(&after, faults)
+        .map(|()| ManagedFilesOutcome {
+            report: after.report.clone(),
+        })
+        .unwrap_or_else(|reason| managed_failure_outcome(&after, reason))
+}
+
+fn restore_lease_record(root: &GitRepository, operation: &str) -> Result<LeaseRecord, Reason> {
+    let acquired_at = unix_seconds_now()?;
+    let owner = ProcessIdentity::current()?;
+    LeaseRecord::new(owner, repository_hash(root.root()), operation, acquired_at)
+}
+
+fn plan_is_unchanged(plan: &ManagedFilesPlan) -> bool {
+    plan.journal.is_none()
+        && matches!(
+            plan.configuration.action,
+            ManagedAction::Unchanged | ManagedAction::Preserve
+        )
+        && matches!(
+            plan.agents_policy.action,
+            ManagedAction::Unchanged | ManagedAction::Preserve
+        )
+}
+
 fn inspect_prepared_recovery(start: &Path) -> Result<Option<PreparedRecovery>, Reason> {
     let Some(root) = find_git_repository(start).map_err(|_| Reason::RepositoryUnsupported)? else {
         return Ok(None);
@@ -702,6 +904,7 @@ fn apply_init_transaction(
     plan: &ManagedFilesPlan,
     faults: &impl TransactionFaults,
 ) -> Result<(), Reason> {
+    let journal = plan.journal.as_ref().ok_or(Reason::InternalError)?;
     let repository = HeldDirectory::open(plan.root.root(), None)?;
     let metadata = HeldDirectory::open(plan.root.metadata(), None)?;
     repository.ensure_replaceable(CONFIGURATION_PATH)?;
@@ -717,7 +920,7 @@ fn apply_init_transaction(
     let (private, private_created) =
         HeldDirectory::open_or_create_private_tracked(&metadata, "agent-lowmem", 0o700)?;
     let journal_before = private.read_optional("restoration-v1.json", MAX_MANIFEST_BYTES)?;
-    if journal_before != plan.journal.before {
+    if journal_before != journal.before {
         if private_created {
             drop(private);
             let _ = metadata.remove_empty_child("agent-lowmem");
@@ -728,8 +931,8 @@ fn apply_init_transaction(
         return Err(Reason::ManagedFileConflict);
     }
 
-    let prepared_bytes = serialize_manifest(&plan.journal.prepared)?;
-    let applied_bytes = serialize_manifest(&plan.journal.applied)?;
+    let prepared_bytes = serialize_manifest(&journal.prepared)?;
+    let applied_bytes = serialize_manifest(journal.applied.as_ref().ok_or(Reason::InternalError)?)?;
     let mut configuration_written = false;
     let mut agents_written = false;
     let mut journal_is_applied = false;
@@ -789,6 +992,113 @@ fn apply_init_transaction(
     Ok(())
 }
 
+fn apply_restore_transaction(
+    plan: &ManagedFilesPlan,
+    faults: &impl TransactionFaults,
+) -> Result<(), Reason> {
+    let journal = plan.journal.as_ref().ok_or(Reason::InternalError)?;
+    let repository = HeldDirectory::open(plan.root.root(), None)?;
+    let metadata = HeldDirectory::open(plan.root.metadata(), None)?;
+    repository.ensure_replaceable(CONFIGURATION_PATH)?;
+    repository.ensure_replaceable(AGENTS_PATH)?;
+    if repository.precondition(CONFIGURATION_PATH)?
+        != FilePrecondition::from(&plan.configuration.before)
+        || repository.precondition(AGENTS_PATH)?
+            != FilePrecondition::from(&plan.agents_policy.before)
+    {
+        return Err(Reason::EvidenceChanged);
+    }
+
+    let (private, private_created) =
+        HeldDirectory::open_or_create_private_tracked(&metadata, "agent-lowmem", 0o700)?;
+    let journal_before = private.read_optional("restoration-v1.json", MAX_MANIFEST_BYTES)?;
+    if journal_before != journal.before {
+        if private_created {
+            drop(private);
+            let _ = metadata.remove_empty_child("agent-lowmem");
+        }
+        return Err(Reason::EvidenceChanged);
+    }
+    if !valid_private_journal(&journal_before) {
+        return Err(Reason::ManagedFileConflict);
+    }
+
+    let prepared_bytes = serialize_manifest(&journal.prepared)?;
+    let mut configuration_written = false;
+    let mut agents_written = false;
+    let transaction = (|| {
+        private.replace_atomic(
+            "restoration-v1.json",
+            &FilePrecondition::from(&journal_before),
+            &prepared_bytes,
+            0o600,
+        )?;
+        fault(faults, FaultPoint::PreparedDurable)?;
+
+        configuration_written =
+            apply_planned_file(&repository, CONFIGURATION_PATH, &plan.configuration)?;
+        fault(faults, FaultPoint::ConfigurationWritten)?;
+        agents_written = apply_planned_file(&repository, AGENTS_PATH, &plan.agents_policy)?;
+        fault(faults, FaultPoint::AgentsWritten)?;
+
+        verify_planned_file(&repository, CONFIGURATION_PATH, &plan.configuration)?;
+        verify_planned_file(&repository, AGENTS_PATH, &plan.agents_policy)?;
+        fault(faults, FaultPoint::TargetsVerified)?;
+
+        let current = private.read_optional("restoration-v1.json", MAX_MANIFEST_BYTES)?;
+        if optional_bytes(&current) != Some(prepared_bytes.as_slice()) {
+            return Err(Reason::ManagedFileConflict);
+        }
+        private.remove_exact("restoration-v1.json", &FilePrecondition::from(&current))
+    })();
+
+    if let Err(reason) = transaction {
+        let rolled_back = rollback_restore(
+            plan,
+            &repository,
+            &private,
+            configuration_written,
+            agents_written,
+        )
+        .is_ok();
+        drop(private);
+        if rolled_back && private_created {
+            let _ = metadata.remove_empty_child("agent-lowmem");
+        }
+        return if rolled_back {
+            Err(reason)
+        } else {
+            Err(Reason::InternalError)
+        };
+    }
+
+    drop(private);
+    let _ = metadata.remove_empty_child("agent-lowmem");
+    Ok(())
+}
+
+fn rollback_restore(
+    plan: &ManagedFilesPlan,
+    repository: &HeldDirectory,
+    private: &HeldDirectory,
+    configuration_written: bool,
+    agents_written: bool,
+) -> Result<(), Reason> {
+    let journal = plan.journal.as_ref().ok_or(Reason::InternalError)?;
+    if agents_written {
+        rollback_planned_file(repository, AGENTS_PATH, &plan.agents_policy)?;
+    }
+    if configuration_written {
+        rollback_planned_file(repository, CONFIGURATION_PATH, &plan.configuration)?;
+    }
+    let current = private.read_optional("restoration-v1.json", MAX_MANIFEST_BYTES)?;
+    let prepared = serialize_manifest(&journal.prepared)?;
+    if optional_bytes(&current) != Some(prepared.as_slice()) {
+        return Err(Reason::InternalError);
+    }
+    restore_optional_file(private, "restoration-v1.json", &current, &journal.before)
+}
+
 fn apply_planned_file(
     directory: &HeldDirectory,
     name: &str,
@@ -800,9 +1110,16 @@ fn apply_planned_file(
     ) {
         return Ok(false);
     }
-    let target = file.target.as_deref().ok_or(Reason::InternalError)?;
-    let mode = file.target_mode.ok_or(Reason::InternalError)?;
-    directory.replace_atomic(name, &FilePrecondition::from(&file.before), target, mode)?;
+    match file.target.as_deref() {
+        Some(target) => {
+            let mode = file.target_mode.ok_or(Reason::InternalError)?;
+            directory.replace_atomic(name, &FilePrecondition::from(&file.before), target, mode)?;
+        }
+        None if file.action == ManagedAction::Remove => {
+            directory.remove_exact(name, &FilePrecondition::from(&file.before))?;
+        }
+        None => return Err(Reason::InternalError),
+    }
     Ok(true)
 }
 
@@ -837,16 +1154,17 @@ fn rollback_init(
     agents_written: bool,
     journal_is_applied: bool,
 ) -> Result<(), Reason> {
+    let journal = plan.journal.as_ref().ok_or(Reason::InternalError)?;
     if journal_is_applied {
         let current = private.read_optional("restoration-v1.json", MAX_MANIFEST_BYTES)?;
-        let applied = serialize_manifest(&plan.journal.applied)?;
+        let applied = serialize_manifest(journal.applied.as_ref().ok_or(Reason::InternalError)?)?;
         if optional_bytes(&current) != Some(applied.as_slice()) {
             return Err(Reason::InternalError);
         }
         private.replace_atomic(
             "restoration-v1.json",
             &FilePrecondition::from(&current),
-            &serialize_manifest(&plan.journal.prepared)?,
+            &serialize_manifest(&journal.prepared)?,
             0o600,
         )?;
     }
@@ -857,12 +1175,7 @@ fn rollback_init(
         rollback_planned_file(repository, CONFIGURATION_PATH, &plan.configuration)?;
     }
     let current = private.read_optional("restoration-v1.json", MAX_MANIFEST_BYTES)?;
-    restore_optional_file(
-        private,
-        "restoration-v1.json",
-        &current,
-        &plan.journal.before,
-    )
+    restore_optional_file(private, "restoration-v1.json", &current, &journal.before)
 }
 
 fn rollback_planned_file(
@@ -898,6 +1211,7 @@ fn restore_optional_file(
 
 fn optional_matches_target(current: &OptionalFile, file: &PlannedFile) -> bool {
     match (current, file.target.as_deref(), file.target_mode) {
+        (OptionalFile::Absent, None, None) => true,
         (OptionalFile::Regular { bytes, mode, .. }, Some(target), Some(target_mode)) => {
             bytes == target && *mode == target_mode
         }
@@ -910,6 +1224,492 @@ fn fault(faults: &impl TransactionFaults, point: FaultPoint) -> Result<(), Reaso
         Err(Reason::InternalError)
     } else {
         Ok(())
+    }
+}
+
+fn plan_restore_inner(start: &Path, request: RestoreRequest) -> Result<ManagedFilesPlan, Reason> {
+    let root = find_git_repository(start)
+        .map_err(|_| Reason::RepositoryUnsupported)?
+        .ok_or(Reason::RepositoryUnsupported)?;
+    let repository = HeldDirectory::open(root.root(), None)?;
+    let configuration_before =
+        repository.read_optional(CONFIGURATION_PATH, MAX_CONFIGURATION_BYTES)?;
+    let agents_before = repository.read_optional(AGENTS_PATH, MAX_AGENTS_BYTES)?;
+    let metadata = HeldDirectory::open(root.metadata(), None)?;
+    let metadata_file = File::open(root.metadata()).map_err(|_| Reason::RepositoryUnsupported)?;
+    let discovered = read_optional_bounded(&metadata_file, JOURNAL_PATH, MAX_MANIFEST_BYTES)?;
+    let journal_before = match HeldDirectory::open_child(&metadata, "agent-lowmem", Some(0o700)) {
+        Ok(private) => private.read_optional("restoration-v1.json", MAX_MANIFEST_BYTES)?,
+        Err(_reason)
+            if optional_bytes(&discovered).is_none()
+                && symlink_metadata(root.metadata().join("agent-lowmem"))
+                    .is_err_and(|error| error.kind() == ErrorKind::NotFound) =>
+        {
+            OptionalFile::Absent
+        }
+        Err(reason) => return Err(reason),
+    };
+    if !valid_private_journal(&journal_before) {
+        return Err(Reason::ManagedFileConflict);
+    }
+    let applied = optional_bytes(&journal_before)
+        .map(parse_manifest)
+        .transpose()?;
+    if applied
+        .as_ref()
+        .is_some_and(|manifest| manifest.state != JournalState::Applied)
+    {
+        return Err(Reason::ManagedFileConflict);
+    }
+    let repository_digest = repository_hash(root.root());
+    if applied
+        .as_ref()
+        .is_some_and(|manifest| manifest.repository_sha256 != hex_digest(&repository_digest))
+    {
+        return Err(Reason::ManagedFileConflict);
+    }
+
+    let mut issues = Vec::new();
+    let (configuration, agents_policy, restore_manifest, manifest_state) = match applied {
+        Some(applied) => {
+            let configuration = plan_journaled_configuration_restore(
+                &configuration_before,
+                &applied.configuration,
+            )?;
+            let (agents_policy, agents_restoration) = plan_agents_restore(
+                &agents_before,
+                &applied.agents_policy,
+                request.force_managed_block,
+            )?;
+            let configuration_restoration =
+                restore_configuration_manifest(&configuration, &applied.configuration)?;
+            let prepared = RestorationManifest::new(
+                JournalState::Prepared,
+                hex_digest(&repository_digest),
+                configuration_restoration,
+                agents_restoration,
+                Some(Box::new(without_previous(applied)?)),
+            )?;
+            (
+                configuration,
+                agents_policy,
+                Some(PlannedJournal {
+                    before: journal_before.clone(),
+                    prepared,
+                    applied: None,
+                }),
+                ManifestState::Applied,
+            )
+        }
+        None => {
+            let configuration = plan_fresh_configuration_restore(
+                root.root(),
+                configuration_before.clone(),
+                &mut issues,
+            );
+            let (agents_policy, agents_restoration) =
+                plan_fresh_agents_restore(&agents_before, request.force_managed_block)?;
+            let needs_write = is_mutating_action(configuration.action)
+                || is_mutating_action(agents_policy.action);
+            let journal = if needs_write {
+                let agents_restoration = agents_restoration.ok_or(Reason::ManagedFileConflict)?;
+                let configuration_restoration = fresh_configuration_manifest(&configuration)?;
+                Some(PlannedJournal {
+                    before: journal_before.clone(),
+                    prepared: RestorationManifest::new(
+                        JournalState::Prepared,
+                        hex_digest(&repository_digest),
+                        configuration_restoration,
+                        agents_restoration,
+                        None,
+                    )?,
+                    applied: None,
+                })
+            } else {
+                None
+            };
+            (configuration, agents_policy, journal, ManifestState::Absent)
+        }
+    };
+
+    let mut files = vec![
+        file_report(ManagedIdentity::Configuration, &configuration),
+        file_report(ManagedIdentity::AgentsPolicy, &agents_policy),
+    ];
+    if restore_manifest.is_some() || optional_bytes(&journal_before).is_some() {
+        files.push(ManagedFileReport {
+            identity: ManagedIdentity::RestorationManifest,
+            action: ManagedAction::Remove,
+            before_sha256: optional_digest(&journal_before),
+            target_sha256: None,
+        });
+    }
+    let unchanged = restore_manifest.is_none()
+        && !is_mutating_action(configuration.action)
+        && !is_mutating_action(agents_policy.action);
+    let outcome = if unchanged {
+        ManagedOutcome::Unchanged
+    } else if request.dry_run {
+        ManagedOutcome::Planned
+    } else {
+        ManagedOutcome::Restored
+    };
+    let report = ManagedFilesReport::new(
+        ManagedCommand::Restore,
+        request.dry_run,
+        outcome,
+        ManagedResult::new(0, Reason::Completed)?,
+        files,
+        Vec::new(),
+        Vec::new(),
+        issues,
+        manifest_state,
+    )?;
+    Ok(ManagedFilesPlan {
+        command: ManagedCommand::Restore,
+        request: ManagedRequest::Restore(request),
+        root,
+        repository_hash: repository_digest,
+        evidence: EvidenceSnapshot::new(Vec::new())?,
+        configuration,
+        agents_policy,
+        journal: restore_manifest,
+        effective_config: None,
+        report,
+    })
+}
+
+fn is_mutating_action(action: ManagedAction) -> bool {
+    matches!(
+        action,
+        ManagedAction::Create | ManagedAction::Replace | ManagedAction::Remove
+    )
+}
+
+fn plan_journaled_configuration_restore(
+    current: &OptionalFile,
+    recorded: &ConfigurationRestoration,
+) -> Result<PlannedFile, Reason> {
+    if recorded.ownership == Ownership::External {
+        let matches = optional_mode(current).map(|mode| mode as u16) == recorded.before_mode
+            && optional_digest(current).as_deref() == recorded.external_sha256.as_deref();
+        return matches
+            .then(|| PlannedFile {
+                ownership: Ownership::External,
+                action: ManagedAction::Preserve,
+                before: current.clone(),
+                target: None,
+                target_mode: None,
+            })
+            .ok_or(Reason::ManagedFileConflict);
+    }
+    if !optional_matches_owned(current, recorded.target.as_ref(), recorded.target_mode) {
+        return Err(Reason::ManagedFileConflict);
+    }
+    let baseline = recorded
+        .stable_baseline
+        .as_ref()
+        .ok_or(Reason::ManagedFileConflict)?;
+    let (target, target_mode) = match baseline {
+        PriorManagedState::Absent => (None, None),
+        PriorManagedState::Bytes(bytes) => (
+            Some(bytes.bytes.clone()),
+            Some(u32::from(
+                recorded.before_mode.ok_or(Reason::ManagedFileConflict)?,
+            )),
+        ),
+    };
+    Ok(restore_planned_file(
+        Ownership::Managed,
+        current.clone(),
+        target,
+        target_mode,
+    ))
+}
+
+fn plan_agents_restore(
+    current: &OptionalFile,
+    recorded: &AgentsRestoration,
+    force: bool,
+) -> Result<(PlannedFile, AgentsRestoration), Reason> {
+    let OptionalFile::Regular { bytes, mode, .. } = current else {
+        return Err(Reason::ManagedFileConflict);
+    };
+    if Some(*mode as u16) != recorded.target_mode {
+        return Err(Reason::ManagedFileConflict);
+    }
+    let state = if force {
+        inspect_agents_forced(Some(bytes.clone()))?
+    } else {
+        inspect_agents(Some(bytes.clone()))?
+    };
+    let AgentsDocumentState::OneBlock(block) = state else {
+        return Err(Reason::ManagedFileConflict);
+    };
+    let expected = recorded
+        .target
+        .as_ref()
+        .ok_or(Reason::ManagedFileConflict)?;
+    let expected_block = expected
+        .bytes
+        .strip_prefix(recorded.inserted_separator.as_slice())
+        .unwrap_or(expected.bytes.as_slice());
+    if !force && block.managed_bytes() != expected_block {
+        return Err(Reason::ManagedFileConflict);
+    }
+    let owned_start = block
+        .span
+        .start
+        .checked_sub(recorded.inserted_separator.len())
+        .ok_or(Reason::ManagedFileConflict)?;
+    if bytes.get(owned_start..block.span.start) != Some(recorded.inserted_separator.as_slice()) {
+        return Err(Reason::ManagedFileConflict);
+    }
+    let mut target = Vec::with_capacity(bytes.len() - (block.span.end - owned_start));
+    target.extend_from_slice(&bytes[..owned_start]);
+    target.extend_from_slice(&bytes[block.span.end..]);
+    let delete_document = target.is_empty() && recorded.document_was_absent;
+    let target_bytes = (!delete_document).then_some(target.clone());
+    let planned = restore_planned_file(
+        Ownership::Managed,
+        current.clone(),
+        target_bytes,
+        (!delete_document).then_some(*mode),
+    );
+    let immediate = OwnedBytes::new(block.managed_bytes().to_vec())?;
+    let restoration = AgentsRestoration {
+        ownership: Ownership::Managed,
+        action: DestinationAction::Remove,
+        document_was_absent: delete_document,
+        immediate_before: PriorManagedState::Bytes(immediate),
+        target: None,
+        stable_baseline: recorded.stable_baseline.clone(),
+        before_mode: Some(*mode as u16),
+        target_mode: None,
+        managed_span: ManagedSpan {
+            start: u32::try_from(block.span.start).map_err(|_| Reason::ManagedFileConflict)?,
+            end: u32::try_from(block.span.end).map_err(|_| Reason::ManagedFileConflict)?,
+        },
+        inserted_separator: recorded.inserted_separator.clone(),
+        prefix_sha256: digest_bytes(&bytes[..owned_start]),
+        suffix_sha256: digest_bytes(&bytes[block.span.end..]),
+    };
+    Ok((planned, restoration))
+}
+
+fn plan_fresh_configuration_restore(
+    root: &Path,
+    current: OptionalFile,
+    issues: &mut Vec<ManagedIssueReport>,
+) -> PlannedFile {
+    let Some(bytes) = optional_bytes(&current) else {
+        return restore_planned_file(Ownership::Managed, current, None, None);
+    };
+    let reproducible = reproduce_configuration(root).is_some_and(|generated| generated == bytes);
+    if reproducible {
+        restore_planned_file(Ownership::Managed, current, None, None)
+    } else {
+        issues.push(ManagedIssueReport {
+            reason: Reason::ManagedFileConflict,
+            operation_key: None,
+            workspace_path: None,
+            package_name: None,
+        });
+        PlannedFile {
+            ownership: Ownership::External,
+            action: ManagedAction::Preserve,
+            before: current,
+            target: None,
+            target_mode: None,
+        }
+    }
+}
+
+fn reproduce_configuration(root: &Path) -> Option<Vec<u8>> {
+    let report = inspect_repository(root);
+    if report.failure_reason.is_some() {
+        return None;
+    }
+    let package_manager = report.package_manager.as_ref()?;
+    let directory = File::open(root).ok()?;
+    let package =
+        read_optional_bounded(&directory, "package.json", MAX_CONFIGURATION_BYTES).ok()?;
+    let package_bytes = optional_bytes(&package)?;
+    let manifest: PlannerManifest = serde_json::from_slice(package_bytes).ok()?;
+    let (configuration, _, _, _, _) =
+        generate_configuration(root, package_manager, package_bytes, &manifest.scripts).ok()?;
+    configuration
+        .has_operations()
+        .then(|| configuration.deterministic_bytes().ok())
+        .flatten()
+}
+
+fn plan_fresh_agents_restore(
+    current: &OptionalFile,
+    force: bool,
+) -> Result<(PlannedFile, Option<AgentsRestoration>), Reason> {
+    let OptionalFile::Regular { bytes, mode, .. } = current else {
+        return Ok((
+            restore_planned_file(Ownership::Managed, current.clone(), None, None),
+            Some(no_block_agents_restoration(&[], None, true)?),
+        ));
+    };
+    let state = if force {
+        inspect_agents_forced(Some(bytes.clone()))?
+    } else {
+        inspect_agents(Some(bytes.clone()))?
+    };
+    let AgentsDocumentState::OneBlock(block) = state else {
+        return Ok((
+            PlannedFile {
+                ownership: Ownership::External,
+                action: ManagedAction::Preserve,
+                before: current.clone(),
+                target: None,
+                target_mode: None,
+            },
+            Some(no_block_agents_restoration(bytes, Some(*mode), false)?),
+        ));
+    };
+    let mut target = Vec::with_capacity(bytes.len() - block.span.len());
+    target.extend_from_slice(&bytes[..block.span.start]);
+    target.extend_from_slice(&bytes[block.span.end..]);
+    let delete_document = target.is_empty();
+    let planned = restore_planned_file(
+        Ownership::Managed,
+        current.clone(),
+        (!delete_document).then_some(target),
+        (!delete_document).then_some(*mode),
+    );
+    let restoration = AgentsRestoration {
+        ownership: Ownership::Managed,
+        action: DestinationAction::Remove,
+        document_was_absent: delete_document,
+        immediate_before: PriorManagedState::Bytes(OwnedBytes::new(
+            block.managed_bytes().to_vec(),
+        )?),
+        target: None,
+        stable_baseline: PriorManagedState::Absent,
+        before_mode: Some(*mode as u16),
+        target_mode: None,
+        managed_span: ManagedSpan {
+            start: u32::try_from(block.span.start).map_err(|_| Reason::ManagedFileConflict)?,
+            end: u32::try_from(block.span.end).map_err(|_| Reason::ManagedFileConflict)?,
+        },
+        inserted_separator: Vec::new(),
+        prefix_sha256: digest_bytes(&bytes[..block.span.start]),
+        suffix_sha256: digest_bytes(&bytes[block.span.end..]),
+    };
+    Ok((planned, Some(restoration)))
+}
+
+fn no_block_agents_restoration(
+    bytes: &[u8],
+    mode: Option<u32>,
+    document_was_absent: bool,
+) -> Result<AgentsRestoration, Reason> {
+    let position = u32::try_from(bytes.len()).map_err(|_| Reason::ManagedFileConflict)?;
+    Ok(AgentsRestoration {
+        ownership: Ownership::Managed,
+        action: DestinationAction::Unchanged,
+        document_was_absent,
+        immediate_before: PriorManagedState::Absent,
+        target: None,
+        stable_baseline: PriorManagedState::Absent,
+        before_mode: mode.map(|mode| mode as u16),
+        target_mode: mode.map(|mode| mode as u16),
+        managed_span: ManagedSpan {
+            start: position,
+            end: position,
+        },
+        inserted_separator: Vec::new(),
+        prefix_sha256: digest_bytes(bytes),
+        suffix_sha256: digest_bytes(&[]),
+    })
+}
+
+fn restore_configuration_manifest(
+    file: &PlannedFile,
+    recorded: &ConfigurationRestoration,
+) -> Result<ConfigurationRestoration, Reason> {
+    if file.ownership == Ownership::External {
+        return Ok(recorded.clone());
+    }
+    Ok(ConfigurationRestoration {
+        ownership: Ownership::Managed,
+        action: destination_action(file.action),
+        immediate_before: Some(prior_state(&file.before)?),
+        target: file.target.clone().map(OwnedBytes::new).transpose()?,
+        stable_baseline: recorded.stable_baseline.clone(),
+        before_mode: optional_mode(&file.before).map(|mode| mode as u16),
+        target_mode: file.target_mode.map(|mode| mode as u16),
+        external_sha256: None,
+    })
+}
+
+fn fresh_configuration_manifest(file: &PlannedFile) -> Result<ConfigurationRestoration, Reason> {
+    if file.ownership == Ownership::External {
+        return Ok(ConfigurationRestoration {
+            ownership: Ownership::External,
+            action: DestinationAction::Preserve,
+            immediate_before: None,
+            target: None,
+            stable_baseline: None,
+            before_mode: optional_mode(&file.before).map(|mode| mode as u16),
+            target_mode: None,
+            external_sha256: optional_digest(&file.before),
+        });
+    }
+    Ok(ConfigurationRestoration {
+        ownership: Ownership::Managed,
+        action: destination_action(file.action),
+        immediate_before: Some(prior_state(&file.before)?),
+        target: file.target.clone().map(OwnedBytes::new).transpose()?,
+        stable_baseline: Some(PriorManagedState::Absent),
+        before_mode: optional_mode(&file.before).map(|mode| mode as u16),
+        target_mode: file.target_mode.map(|mode| mode as u16),
+        external_sha256: None,
+    })
+}
+
+fn optional_matches_owned(
+    current: &OptionalFile,
+    target: Option<&OwnedBytes>,
+    mode: Option<u16>,
+) -> bool {
+    match (current, target) {
+        (OptionalFile::Absent, None) => mode.is_none(),
+        (
+            OptionalFile::Regular {
+                bytes,
+                mode: actual,
+                ..
+            },
+            Some(target),
+        ) => bytes == &target.bytes && Some(*actual as u16) == mode,
+        _ => false,
+    }
+}
+
+fn restore_planned_file(
+    ownership: Ownership,
+    before: OptionalFile,
+    target: Option<Vec<u8>>,
+    target_mode: Option<u32>,
+) -> PlannedFile {
+    let action = match (optional_bytes(&before), target.as_deref()) {
+        (None, None) => ManagedAction::Unchanged,
+        (Some(current), Some(next)) if current == next => ManagedAction::Unchanged,
+        (Some(_), Some(_)) => ManagedAction::Replace,
+        (Some(_), None) => ManagedAction::Remove,
+        (None, Some(_)) => ManagedAction::Create,
+    };
+    PlannedFile {
+        ownership,
+        action,
+        before,
+        target,
+        target_mode,
     }
 }
 
@@ -1077,7 +1877,7 @@ fn plan_init_inner(start: &Path, request: InitRequest) -> Result<ManagedFilesPla
             .as_ref()
             .map(|previous| &previous.agents_policy),
     )?;
-    let previous = previous_applied.map(without_previous);
+    let previous = previous_applied.map(without_previous).transpose()?;
     let prepared = RestorationManifest::new(
         JournalState::Prepared,
         repository_sha256.clone(),
@@ -1095,9 +1895,10 @@ fn plan_init_inner(start: &Path, request: InitRequest) -> Result<ManagedFilesPla
     let journal = PlannedJournal {
         before: journal_before.clone(),
         prepared,
-        applied,
+        applied: Some(applied),
     };
-    let applied_journal_bytes = serialize_manifest(&journal.applied)?;
+    let applied_journal_bytes =
+        serialize_manifest(journal.applied.as_ref().ok_or(Reason::InternalError)?)?;
     let files = vec![
         file_report(ManagedIdentity::Configuration, &configuration),
         file_report(ManagedIdentity::AgentsPolicy, &agents_policy),
@@ -1129,14 +1930,14 @@ fn plan_init_inner(start: &Path, request: InitRequest) -> Result<ManagedFilesPla
     )?;
     Ok(ManagedFilesPlan {
         command: ManagedCommand::Init,
-        request,
+        request: ManagedRequest::Init(request),
         root,
         repository_hash: repository_digest,
         evidence,
         configuration,
         agents_policy,
-        journal,
-        effective_config,
+        journal: Some(journal),
+        effective_config: Some(effective_config),
         report,
     })
 }
@@ -1547,9 +2348,14 @@ fn parse_previous_manifest(file: &OptionalFile) -> Result<Option<RestorationMani
     Ok(Some(manifest))
 }
 
-fn without_previous(mut manifest: RestorationManifest) -> RestorationManifest {
-    manifest.previous_applied = None;
-    manifest
+fn without_previous(manifest: RestorationManifest) -> Result<RestorationManifest, Reason> {
+    RestorationManifest::new(
+        manifest.state,
+        manifest.repository_sha256,
+        manifest.configuration,
+        manifest.agents_policy,
+        None,
+    )
 }
 
 fn operation_report(operation: &crate::repository::OperationSummary) -> ManagedOperationReport {
@@ -1663,6 +2469,60 @@ fn planning_failure(
     ManagedFilesFailure { reason, report }
 }
 
+fn restore_planning_failure(
+    request: RestoreRequest,
+    reason: Reason,
+    manifest_state: ManifestState,
+) -> ManagedFilesFailure {
+    let (code, outcome) = if reason == Reason::ManagedFileConflict {
+        if request.dry_run && manifest_state == ManifestState::Prepared {
+            (0, ManagedOutcome::RecoveryRequired)
+        } else {
+            (78, ManagedOutcome::Conflict)
+        }
+    } else {
+        (failure_code(reason), ManagedOutcome::Failed)
+    };
+    let result = ManagedResult::new(code, reason).unwrap_or(ManagedResult {
+        code: 70,
+        reason: Reason::InternalError,
+    });
+    let report = ManagedFilesReport::new(
+        ManagedCommand::Restore,
+        request.dry_run,
+        outcome,
+        result,
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        manifest_state,
+    )
+    .expect("restore failure reports are internally valid");
+    ManagedFilesFailure { reason, report }
+}
+
+fn restore_recovery_required_outcome(request: RestoreRequest) -> ManagedFilesOutcome {
+    let failure = restore_planning_failure(
+        request,
+        Reason::ManagedFileConflict,
+        ManifestState::Prepared,
+    );
+    ManagedFilesOutcome {
+        report: failure.report,
+    }
+}
+
+fn restore_recovery_failure_outcome(
+    request: RestoreRequest,
+    reason: Reason,
+    manifest_state: ManifestState,
+) -> ManagedFilesOutcome {
+    ManagedFilesOutcome {
+        report: restore_planning_failure(request, reason, manifest_state).report,
+    }
+}
+
 fn recovery_required_outcome(request: InitRequest) -> ManagedFilesOutcome {
     let failure = planning_failure(
         request,
@@ -1737,8 +2597,11 @@ fn failure_code(reason: Reason) -> i32 {
 }
 
 fn previous_applied_matches(plan: &ManagedFilesPlan) -> bool {
+    let Some(journal) = plan.journal.as_ref() else {
+        return false;
+    };
     if plan.report.manifest_state != ManifestState::Applied
-        || optional_mode(&plan.journal.before) != Some(0o600)
+        || optional_mode(&journal.before) != Some(0o600)
         || !matches!(
             plan.configuration.action,
             ManagedAction::Unchanged | ManagedAction::Preserve
@@ -1753,7 +2616,7 @@ fn previous_applied_matches(plan: &ManagedFilesPlan) -> bool {
     if HeldDirectory::open_child(&metadata, "agent-lowmem", Some(0o700)).is_err() {
         return false;
     }
-    let Some(bytes) = optional_bytes(&plan.journal.before) else {
+    let Some(bytes) = optional_bytes(&journal.before) else {
         return false;
     };
     let Ok(previous) = parse_manifest(bytes) else {
@@ -1771,7 +2634,10 @@ fn previous_applied_matches(plan: &ManagedFilesPlan) -> bool {
             previous.configuration.external_sha256 == optional_digest(&plan.configuration.before)
         }
     };
-    let desired_agents = &plan.journal.applied.agents_policy;
+    let Some(applied) = &journal.applied else {
+        return false;
+    };
+    let desired_agents = &applied.agents_policy;
     configuration_matches
         && previous.agents_policy.target == desired_agents.target
         && previous.agents_policy.managed_span == desired_agents.managed_span
@@ -1825,9 +2691,11 @@ fn unix_seconds_now() -> Result<u64, Reason> {
 
 #[cfg(test)]
 mod transaction_tests {
-    use super::{FaultPoint, TransactionFaults, execute_init_core};
+    use super::{
+        FaultPoint, ManagedOutcome, TransactionFaults, execute_init_core, execute_restore_core,
+    };
     use crate::{
-        cli::InitRequest,
+        cli::{InitRequest, RestoreRequest},
         host::{HostReadError, HostSource},
         result::Reason,
     };
@@ -2045,6 +2913,79 @@ mod transaction_tests {
     }
 
     #[test]
+    fn every_restore_fault_rolls_back_to_the_applied_state() {
+        for point in [
+            FaultPoint::PreparedDurable,
+            FaultPoint::ConfigurationWritten,
+            FaultPoint::AgentsWritten,
+            FaultPoint::TargetsVerified,
+        ] {
+            let fixture = Fixture::new();
+            initialize(&fixture);
+            let before = managed_bytes(&fixture.root);
+            let outcome = execute_restore_core(
+                &fixture.root,
+                &fixture.runtime,
+                &RestoreRequest {
+                    dry_run: false,
+                    force_managed_block: false,
+                    json: true,
+                },
+                || {},
+                &OneFault(point),
+            );
+
+            assert_eq!(outcome.report.result.code, 70, "fault: {point:?}");
+            assert_eq!(managed_bytes(&fixture.root), before, "fault: {point:?}");
+        }
+    }
+
+    #[test]
+    fn the_next_restore_recovers_after_every_restore_crash_boundary() {
+        for point in [
+            FaultPoint::PreparedDurable,
+            FaultPoint::ConfigurationWritten,
+            FaultPoint::AgentsWritten,
+            FaultPoint::TargetsVerified,
+        ] {
+            let fixture = Fixture::new();
+            initialize(&fixture);
+            let request = RestoreRequest {
+                dry_run: false,
+                force_managed_block: false,
+                json: true,
+            };
+            let crashed = catch_unwind(AssertUnwindSafe(|| {
+                execute_restore_core(
+                    &fixture.root,
+                    &fixture.runtime,
+                    &request,
+                    || {},
+                    &CrashAt(point),
+                )
+            }));
+            assert!(crashed.is_err(), "fault: {point:?}");
+
+            let recovered = execute_restore_core(
+                &fixture.root,
+                &fixture.runtime,
+                &request,
+                || {},
+                &OneFault(FaultPoint::Never),
+            );
+
+            assert_eq!(
+                recovered.report.outcome,
+                ManagedOutcome::Restored,
+                "fault: {point:?}, outcome: {recovered:?}"
+            );
+            assert!(!fixture.root.join(".agent-lowmem.json").exists());
+            assert!(!fixture.root.join("AGENTS.md").exists());
+            assert!(!fixture.root.join(".git/agent-lowmem").exists());
+        }
+    }
+
+    #[test]
     fn post_lock_source_drift_returns_75_before_the_prepared_journal() {
         for identity in ["package", "lockfile", "tool"] {
             let fixture = Fixture::new();
@@ -2200,6 +3141,21 @@ mod transaction_tests {
             fs::read(root.join("AGENTS.md")).unwrap(),
             fs::read(root.join(".git/agent-lowmem/restoration-v1.json")).unwrap(),
         )
+    }
+
+    fn initialize(fixture: &Fixture) {
+        let outcome = execute_init_core(
+            &SupportedHost::reference(),
+            &fixture.root,
+            &fixture.runtime,
+            &InitRequest {
+                dry_run: false,
+                json: true,
+            },
+            || {},
+            &OneFault(FaultPoint::Never),
+        );
+        assert_eq!(outcome.report.result.reason, Reason::Completed);
     }
 
     struct SupportedHost {

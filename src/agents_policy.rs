@@ -98,6 +98,17 @@ impl fmt::Debug for AgentsEdit {
 }
 
 pub(crate) fn inspect_agents(bytes: Option<Vec<u8>>) -> Result<AgentsDocumentState, Reason> {
+    inspect_agents_inner(bytes, true)
+}
+
+pub(crate) fn inspect_agents_forced(bytes: Option<Vec<u8>>) -> Result<AgentsDocumentState, Reason> {
+    inspect_agents_inner(bytes, false)
+}
+
+fn inspect_agents_inner(
+    bytes: Option<Vec<u8>>,
+    verify_body_digest: bool,
+) -> Result<AgentsDocumentState, Reason> {
     let Some(bytes) = bytes else {
         return Ok(AgentsDocumentState::Absent);
     };
@@ -141,7 +152,7 @@ pub(crate) fn inspect_agents(bytes: Option<Vec<u8>>) -> Result<AgentsDocumentSta
         return Err(Reason::ManagedFileConflict);
     }
     let actual_sha256: [u8; 32] = Sha256::digest(&bytes[body.clone()]).into();
-    if actual_sha256 != declared_sha256 {
+    if verify_body_digest && actual_sha256 != declared_sha256 {
         return Err(Reason::ManagedFileConflict);
     }
 

@@ -384,6 +384,26 @@ fn classify_agents(
     if agents_before_matches(current, agents) {
         return Some((RecoverySide::Before, None));
     }
+    if agents.target.is_none() {
+        let insertion =
+            (agents.managed_span.start as usize).checked_sub(agents.inserted_separator.len())?;
+        return match current {
+            OptionalFile::Absent if agents.document_was_absent => (insertion == 0
+                && agents.prefix_sha256 == digest(&[])
+                && agents.suffix_sha256 == digest(&[]))
+            .then_some((RecoverySide::Target, Some(0..0))),
+            OptionalFile::Regular { bytes, mode, .. } => (Some(*mode as u16) == agents.before_mode
+                && matches!(
+                    inspect_agents(Some(bytes.clone())),
+                    Ok(AgentsDocumentState::NoBlock { .. })
+                )
+                && insertion <= bytes.len()
+                && digest(&bytes[..insertion]) == agents.prefix_sha256
+                && digest(&bytes[insertion..]) == agents.suffix_sha256)
+                .then_some((RecoverySide::Target, Some(insertion..insertion))),
+            _ => None,
+        };
+    }
     let OptionalFile::Regular { bytes, mode, .. } = current else {
         return None;
     };
@@ -433,8 +453,25 @@ fn agents_before_matches(current: &OptionalFile, agents: &AgentsRestoration) -> 
             else {
                 return false;
             };
+            let prefix_end = if agents.target.is_none() {
+                let Some(owned_start) = block
+                    .span
+                    .start
+                    .checked_sub(agents.inserted_separator.len())
+                else {
+                    return false;
+                };
+                if bytes.get(owned_start..block.span.start)
+                    != Some(agents.inserted_separator.as_slice())
+                {
+                    return false;
+                }
+                owned_start
+            } else {
+                block.span.start
+            };
             block.managed_bytes() == immediate.bytes
-                && digest(&bytes[..block.span.start]) == agents.prefix_sha256
+                && digest(&bytes[..prefix_end]) == agents.prefix_sha256
                 && digest(&bytes[block.span.end..]) == agents.suffix_sha256
         }
         _ => false,
@@ -486,11 +523,33 @@ fn recover_configuration(repository: &HeldDirectory, plan: &RecoveryPlan) -> Res
 }
 
 fn recover_agents(repository: &HeldDirectory, plan: &RecoveryPlan) -> Result<(), Reason> {
+    let span = plan.agents_span.clone().ok_or(Reason::InternalError)?;
+    let agents = &plan.manifest.agents_policy;
+    if agents.target.is_none() {
+        let bytes = match &plan.agents {
+            OptionalFile::Absent => &[][..],
+            OptionalFile::Regular { bytes, .. } => bytes.as_slice(),
+        };
+        let PriorManagedState::Bytes(immediate) = &agents.immediate_before else {
+            return Err(Reason::InternalError);
+        };
+        let mut restored = Vec::with_capacity(
+            bytes.len() + agents.inserted_separator.len() + immediate.bytes.len(),
+        );
+        restored.extend_from_slice(&bytes[..span.start]);
+        restored.extend_from_slice(&agents.inserted_separator);
+        restored.extend_from_slice(&immediate.bytes);
+        restored.extend_from_slice(&bytes[span.end..]);
+        return repository.replace_atomic(
+            "AGENTS.md",
+            &FilePrecondition::from(&plan.agents),
+            &restored,
+            u32::from(agents.before_mode.ok_or(Reason::InternalError)?),
+        );
+    }
     let OptionalFile::Regular { bytes, .. } = &plan.agents else {
         return Err(Reason::InternalError);
     };
-    let span = plan.agents_span.clone().ok_or(Reason::InternalError)?;
-    let agents = &plan.manifest.agents_policy;
     let replacement = match &agents.immediate_before {
         PriorManagedState::Absent => &[][..],
         PriorManagedState::Bytes(before) => before.bytes.as_slice(),
@@ -602,10 +661,15 @@ fn valid_agents(agents: &AgentsRestoration) -> bool {
         .managed_span
         .end
         .checked_sub(agents.managed_span.start);
+    let no_owned_span = span_length == Some(0)
+        && agents.action == DestinationAction::Unchanged
+        && matches!(agents.immediate_before, PriorManagedState::Absent)
+        && agents.target.is_none();
     if !matches!(agents.ownership, Ownership::Managed)
         || matches!(agents.action, DestinationAction::Preserve)
         || agents.managed_span.end > MAX_DOCUMENT_BYTES
-        || span_length.is_none_or(|length| length == 0)
+        || span_length.is_none()
+        || (span_length == Some(0) && !no_owned_span)
         || !agents.before_mode.is_none_or(valid_mode)
         || !agents.target_mode.is_none_or(valid_mode)
         || !valid_prior(&agents.immediate_before, MAX_MANAGED_BLOCK_BYTES)
@@ -622,6 +686,7 @@ fn valid_agents(agents: &AgentsRestoration) -> bool {
     }
     let expected_length = match agents.action {
         DestinationAction::Remove => prior_bytes(&agents.immediate_before).map(Vec::len),
+        DestinationAction::Unchanged if agents.target.is_none() => Some(0),
         _ => agents.target.as_ref().map(|target| target.bytes.len()),
     };
     expected_length.is_some_and(|length| span_length == u32::try_from(length).ok())
@@ -666,10 +731,13 @@ fn valid_agents_action(
                 && target_mode.is_none()
         }
         DestinationAction::Unchanged => {
-            prior_bytes(immediate)
+            (prior_bytes(immediate)
                 .is_some_and(|before| target.is_some_and(|target| before == &target.bytes))
                 && before_mode.is_some()
-                && before_mode == target_mode
+                && before_mode == target_mode)
+                || (matches!(immediate, PriorManagedState::Absent)
+                    && target.is_none()
+                    && before_mode == target_mode)
         }
         DestinationAction::Preserve => false,
     }
@@ -702,10 +770,14 @@ fn valid_managed_action(
                 && target_mode.is_none()
         }
         DestinationAction::Unchanged => {
-            prior_bytes(immediate)
+            (prior_bytes(immediate)
                 .is_some_and(|before| target.is_some_and(|target| before == &target.bytes))
                 && before_mode.is_some()
-                && before_mode == target_mode
+                && before_mode == target_mode)
+                || (matches!(immediate, PriorManagedState::Absent)
+                    && target.is_none()
+                    && before_mode.is_none()
+                    && target_mode.is_none())
         }
         DestinationAction::Preserve => false,
     }

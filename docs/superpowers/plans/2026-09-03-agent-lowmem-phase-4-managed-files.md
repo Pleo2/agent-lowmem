@@ -815,23 +815,23 @@ pub fn execute_restore(
 ) -> ManagedFilesOutcome;
 ```
 
-- [ ] **Step 1: Add applied-journal restore tests** for managed config deletion, external config preservation, current-target verification, block/separator removal, AGENTS deletion only when created and empty, unrelated prefix/suffix edits, journal deletion after proof, and private-directory removal only when empty/owned/mode `0700`.
+- [x] **Step 1: Add applied-journal restore tests** for managed config deletion, external config preservation, current-target verification, block/separator removal, AGENTS deletion only when created and empty, unrelated prefix/suffix edits, journal deletion after proof, and private-directory removal only when empty/owned/mode `0700`.
 
-- [ ] **Step 2: Add stable-baseline tests** proving repeated init updates retain config baseline `absent`, while external ownership remains external for the journal lifetime.
+- [x] **Step 2: Add stable-baseline tests** proving repeated init updates retain config baseline `absent`, while external ownership remains external for the journal lifetime.
 
-- [ ] **Step 3: Add force-boundary tests**: an edited but structurally complete single block is removable only with `--force-managed-block`; duplicate, nested, incomplete, unsupported format, config edits, and recovery conflicts remain unforceable.
+- [x] **Step 3: Add force-boundary tests**: an edited but structurally complete single block is removable only with `--force-managed-block`; duplicate, nested, incomplete, unsupported format, config edits, and recovery conflicts remain unforceable.
 
-- [ ] **Step 4: Add no-journal fresh-clone tests** for valid self-hashed block removal, exact deterministic config removal, non-reproducible config preservation with issue, empty AGENTS cleanup, no init host gate, and complete idempotency.
+- [x] **Step 4: Add no-journal fresh-clone tests** for valid self-hashed block removal, exact deterministic config removal, non-reproducible config preservation with issue, empty AGENTS cleanup, no init host gate, and complete idempotency.
 
-- [ ] **Step 5: Confirm RED**
+- [x] **Step 5: Confirm RED**
 
 Run: `cargo test --test managed_files_restore -j 1 -- --test-threads=1`
 
-- [ ] **Step 6: Implement restore as its own journaled transaction**
+- [x] **Step 6: Implement restore as its own journaled transaction**
 
 Use Plan A/B and the same lease. Write a prepared restore journal before repository edits. Verify terminal repository state before deleting the journal. A handled failure rolls back to the immediate pre-restore managed state.
 
-- [ ] **Step 7: Verify and commit**
+- [x] **Step 7: Verify and commit**
 
 Run: `cargo test --test managed_files_restore -j 1 -- --test-threads=1`
 
