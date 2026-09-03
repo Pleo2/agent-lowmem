@@ -22,3 +22,24 @@
 | Gate commands | `cargo fmt --all -- --check`<br>`cargo clippy --all-targets -j 1 -- -D warnings`<br>`cargo test -j 1 -- --test-threads=1`<br>`cargo build --release -j 1`<br>`cargo test --release --test doctor_budget -j 1 -- --ignored --test-threads=1 --nocapture`<br>`stat -f '%z bytes' target/release/agent-lowmem`<br>`/usr/bin/time -l target/release/agent-lowmem doctor >/dev/null`<br>`git diff --check` |
 
 These are development measurements on the reference Mac, not a release or portability claim.
+
+## Phase 2 Repository Policy Gate — 2026-09-03
+
+| Field | Evidence |
+| --- | --- |
+| Host key | `darwin/arm64`; macOS `26.6.2`; `Mac14,15`; `Apple M2`; `8589934592` physical-memory bytes; `16384` page-size bytes |
+| Rust | `rustc 1.85.0 (4d91de4e4 2025-02-17)` |
+| Implementation HEAD under test | `8ef4af69bf6829dccc623a46d4b6fb385ff670b3` |
+| Package managers | npm `12.0.2`; pnpm `11.25.0` |
+| Adapter snapshot | Vitest `4.1.11`; Jest `30.5.1`; Node `24.14.1`; TypeScript `7.0.2`; ESLint `10.9.1`; Next.js `16.3.4`; `@nestjs/cli` `12.0.0`; `cross-env` `10.1.0`; `dotenv-cli` `11.0.0`; `rimraf` `6.1.3` |
+| Tests | `94` active passed: `82` unit, `6` doctor CLI integration, `6` repository-policy integration; `2` release-only budget tests passed separately |
+| Release binary | `650624` bytes; limit `12582912` bytes |
+| Maximum resident set size | `1605632` bytes; limit `25165824` bytes |
+| Outside-repository warm-cache timing | 20 recorded runs; median `2.077 ms`; p95 `4.763 ms`; median limit `100 ms` |
+| npm single-package warm-cache timing | 20 recorded runs; median `2.095 ms`; p95 `2.354 ms`; limits `300/500 ms` |
+| Rust gate commands | `cargo fmt --all -- --check`<br>`cargo clippy --all-targets -j 1 -- -D warnings`<br>`cargo test -j 1 -- --test-threads=1`<br>`cargo build --release -j 1`<br>`cargo test --release --test doctor_budget -j 1 -- --ignored --test-threads=1 --nocapture` |
+| Resource commands | `stat -f '%z bytes' target/release/agent-lowmem`<br>`/usr/bin/time -l target/release/agent-lowmem doctor >/dev/null` |
+| Boundary audit | `rg -n 'std::process::Command\|Command::new\|node --version\|npm config\|pnpm config\|kern\.memorystatus_vm_pressure_level\|NODE_OPTIONS' src` returned no matches; `rg -n 'tokio\|async-std\|reqwest\|ureq\|hyper' Cargo.toml Cargo.lock` returned no matches |
+| Deferred command evidence | `run test` returned `64` with `operation-unsupported`; `init` returned `2` with `invalid-cli` |
+
+These are development measurements on the reference Mac, not a release, distribution, or portability claim. Phase 2 starts no repository child and does not enable managed runs.
