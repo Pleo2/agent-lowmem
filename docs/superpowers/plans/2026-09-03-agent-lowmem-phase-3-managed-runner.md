@@ -192,11 +192,11 @@ git commit -m "feat: build evidence-backed run plans"
 - Consumes: repository hash, operation key, effective user, process identity source, and per-user runtime directory.
 - Produces: `UserLease::acquire`, `UserLease::set_child_group`, `UserLease::clear_child_group`, `LockProbe`, and `LockStatus::{Available,Held,OrphanRecovery,InvalidRecord}`.
 
-- [ ] **Step 1: Review and pin safe low-level dependencies**
+- [x] **Step 1: Review and pin safe low-level dependencies**
 
 Extend the already pinned `rustix` feature set only for UID, advisory `flock`, and process-group probes. Review `libproc` for one-PID start identity only. Reject broad enumeration APIs and record licenses, MSRVs, build dependencies, features, and dependency-tree deltas.
 
-- [ ] **Step 2: Write failing lease tests**
+- [x] **Step 2: Write failing lease tests**
 
 ```rust
 let record = fixture_lock_record(); // local helper returns a complete schema-v1 record
@@ -208,13 +208,13 @@ assert!(UserLease::acquire(&runtime, record).is_ok());
 
 Add mode `0700`/`0600`, nested marker, malformed record, stale record, exact start-identity, orphan-recovery, symlink, wrong-owner, and two-process contention cases.
 
-- [ ] **Step 3: Confirm RED and implement the lease**
+- [x] **Step 3: Confirm RED and implement the lease**
 
 Run: `cargo test --test run_lock -j 1 -- --test-threads=1`
 
 Use the advisory file descriptor as live ownership. Synchronize the redacted record while locked. Never automatically signal an orphan record.
 
-- [ ] **Step 4: Verify and commit**
+- [x] **Step 4: Verify and commit**
 
 Run: `cargo test lock -j 1 -- --test-threads=1`
 
