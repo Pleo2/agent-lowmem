@@ -319,6 +319,8 @@ pub(crate) fn plan_agents_edit(
 ) -> Result<AgentsEdit, Reason>;
 ```
 
+`ManagedBlock` also retains the inspected document bytes privately so replacement can preserve prefix and suffix exactly. Its custom `Debug` exposes only ranges, format, digest, and byte length—not document content.
+
 The format-1 body starts with the exact v1 policy paragraph and appends the operation examples in this exact form:
 
 ```markdown
@@ -337,28 +339,28 @@ Supported commands:
 
 Render one concrete line per configured operation. Sort root lines by operation key, then workspace lines by workspace key and operation key. Omit either class when empty; do not render the angle-bracket examples literally.
 
-- [ ] **Step 1: Add independent hash goldens** using known body bytes and a separately calculated lowercase SHA-256 marker.
+- [x] **Step 1: Add independent hash goldens** using known body bytes and a separately calculated lowercase SHA-256 marker.
 
-- [ ] **Step 2: Add scanner tables** for no marker, one valid block, duplicate, nested, incomplete start/end, unsupported format, uppercase/invalid digest, hash mismatch, non-UTF-8, and over-limit input.
+- [x] **Step 2: Add scanner tables** for no marker, one valid block, duplicate, nested, incomplete start/end, unsupported format, uppercase/invalid digest, hash mismatch, non-UTF-8, and over-limit input.
 
-- [ ] **Step 3: Add placement tests** for absent file, empty file, file ending with and without LF, replacement with arbitrary prefix/suffix bytes, exact desired block, and 65,536-byte generated-block boundary.
+- [x] **Step 3: Add placement tests** for absent file, empty file, file ending with and without LF, replacement with arbitrary prefix/suffix bytes, exact desired block, and 65,536-byte generated-block boundary.
 
-- [ ] **Step 4: Confirm RED**
+- [x] **Step 4: Confirm RED**
 
 Run: `cargo test agents_policy::tests -j 1 -- --test-threads=1`
 
-- [ ] **Step 5: Implement bounded byte scanning and deterministic rendering**
+- [x] **Step 5: Implement bounded byte scanning and deterministic rendering**
 
 The digest covers only exact body bytes between marker newlines. The parser must find marker-looking text anywhere; it must not use a Markdown parser. Render only configured operation identities and exact `agent-lowmem run` examples—never raw scripts or rejected candidates.
 
-- [ ] **Step 6: Verify exterior-byte preservation and commit**
+- [x] **Step 6: Verify exterior-byte preservation and commit**
 
 Run: `cargo test agents_policy -j 1 -- --test-threads=1`
 
 Run: `cargo test --test managed_agents_policy -j 1 -- --test-threads=1`
 
 ```bash
-git add src/agents_policy.rs src/lib.rs tests/managed_agents_policy.rs tests/fixtures/managed-files/agents
+git add src/agents_policy.rs src/lib.rs tests/managed_agents_policy.rs tests/fixtures/managed-files/agents docs/superpowers/plans/2026-09-03-agent-lowmem-phase-4-managed-files.md
 git commit -m "feat: manage a hashed agents policy block"
 ```
 
