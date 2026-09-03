@@ -121,6 +121,14 @@ impl HeldDirectory {
         name: &str,
         mode: u32,
     ) -> Result<Self, Reason> {
+        Self::open_or_create_private_tracked(parent, name, mode).map(|(directory, _)| directory)
+    }
+
+    pub(crate) fn open_or_create_private_tracked(
+        parent: &HeldDirectory,
+        name: &str,
+        mode: u32,
+    ) -> Result<(Self, bool), Reason> {
         if !valid_component(name) || mode != 0o700 {
             return Err(Reason::ManagedFileConflict);
         }
@@ -154,7 +162,7 @@ impl HeldDirectory {
         } else {
             directory.validate(Some(mode))?;
         }
-        Ok(directory)
+        Ok((directory, created))
     }
 
     pub(crate) fn open_child(
@@ -278,6 +286,20 @@ impl HeldDirectory {
         self.descriptor
             .sync_all()
             .map_err(|_| Reason::InternalError)
+    }
+
+    pub(crate) fn remove_empty_child(&self, name: &str) -> Result<(), Reason> {
+        if !valid_component(name) {
+            return Err(Reason::ManagedFileConflict);
+        }
+        unlinkat(&self.descriptor, name, AtFlags::REMOVEDIR).map_err(|error| {
+            if error == Errno::NOENT || error == Errno::NOTEMPTY {
+                Reason::ManagedFileConflict
+            } else {
+                Reason::InternalError
+            }
+        })?;
+        self.sync()
     }
 
     fn validate(&self, expected_mode: Option<u32>) -> Result<(), Reason> {

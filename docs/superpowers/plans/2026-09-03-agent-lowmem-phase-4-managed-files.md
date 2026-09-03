@@ -695,23 +695,23 @@ pub fn execute_init(
 ) -> ManagedFilesOutcome;
 ```
 
-- [ ] **Step 1: Add Plan A/B drift tests** mutating every source and destination identity between passes. Expect code 75 / `evidence-changed`, no prepared journal, and no repository mutation.
+- [x] **Step 1: Add Plan A/B drift tests** mutating every source and destination identity between passes. Expect code 75 / `evidence-changed`, no prepared journal, and no repository mutation.
 
-- [ ] **Step 2: Add global lease tests** proving `run`, `init`, and `restore` serialize through the same lock; dry-run creates/acquires nothing; nested invocation returns code 73; journal records no process identity.
+- [x] **Step 2: Add global lease tests** proving `run`, `init`, and `restore` serialize through the same lock; dry-run creates/acquires nothing; nested invocation returns code 73; journal records no process identity.
 
-- [ ] **Step 3: Add happy-path transaction tests** for new repo, external config, adopted config/block, managed update, unchanged rerun, exact journal modes, and apply order observable through a test-only fault seam.
+- [x] **Step 3: Add happy-path transaction tests** for new repo, external config, adopted config/block, managed update, unchanged rerun, exact journal modes, and apply order observable through a test-only fault seam.
 
-- [ ] **Step 4: Add failure injection at every durable boundary**
+- [x] **Step 4: Add failure injection at every durable boundary**
 
 For each `FaultPoint`, assert either complete immediate rollback plus restored prior applied journal, or a preserved valid prepared journal and code 70. Assert no completion outcome on partial state.
 
-- [ ] **Step 5: Confirm RED**
+- [x] **Step 5: Confirm RED**
 
 Run: `cargo test --test managed_files_transaction -j 1 -- --test-threads=1`
 
 Run: `cargo test --test managed_files_lock -j 1 -- --test-threads=1`
 
-- [ ] **Step 6: Implement exact apply order**
+- [x] **Step 6: Implement exact apply order**
 
 1. Validate descriptors and Plan B.
 2. Create private directory mode `0700`.
@@ -724,9 +724,9 @@ Run: `cargo test --test managed_files_lock -j 1 -- --test-threads=1`
 
 Acquire the lease with the Plan A repository hash and operation key `init`, then compute Plan B from Plan A's canonical Git root rather than from a newly interpreted current working directory.
 
-- [ ] **Step 7: Implement handled rollback** using only immediate-before owned states; restore the prior applied journal or remove the first-init journal and its owned private directory when empty. Preserve prepared state when rollback proof fails.
+- [x] **Step 7: Implement handled rollback** using only immediate-before owned states; restore the prior applied journal or remove the first-init journal and its owned private directory when empty. Preserve prepared state when rollback proof fails.
 
-- [ ] **Step 8: Verify and commit**
+- [x] **Step 8: Verify and commit**
 
 Run: `cargo test --test managed_files_transaction -j 1 -- --test-threads=1`
 

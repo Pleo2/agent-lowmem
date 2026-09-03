@@ -2,7 +2,7 @@ use crate::{
     agents_policy::{
         AgentsDocumentState, MAX_AGENTS_BYTES, inspect_agents, plan_agents_edit, render_policy_body,
     },
-    atomic_file::{OptionalFile, read_optional_bounded},
+    atomic_file::{FilePrecondition, HeldDirectory, OptionalFile, read_optional_bounded},
     cli::InitRequest,
     configuration::{
         AgentLowmemConfig, CANONICAL_OPERATIONS, MAX_CONFIG_WORKSPACES, OperationConfig,
@@ -10,6 +10,7 @@ use crate::{
     },
     evidence::{EvidenceReader, EvidenceSnapshot},
     host::{HostSource, inspect_host},
+    lock::{LeaseRecord, ProcessIdentity, UserLease},
     policy::PolicyTarget,
     repository::{
         GitRepository, OperationStatus, PackageManagerKind, PackageManagerReport,
@@ -30,6 +31,7 @@ use std::{
     fmt::{self, Write as _},
     fs::File,
     path::Path,
+    time::{SystemTime, UNIX_EPOCH},
 };
 
 pub const MANAGED_FILES_SCHEMA_VERSION: u8 = 1;
@@ -79,6 +81,34 @@ pub struct ManagedFilesPlan {
     journal: PlannedJournal,
     effective_config: AgentLowmemConfig,
     report: ManagedFilesReport,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ManagedFilesOutcome {
+    pub report: ManagedFilesReport,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum FaultPoint {
+    PreparedDurable,
+    ConfigurationWritten,
+    AgentsWritten,
+    TargetsVerified,
+    AppliedJournalDurable,
+    #[cfg(test)]
+    Never,
+}
+
+pub(crate) trait TransactionFaults {
+    fn fail_at(&self, point: FaultPoint) -> bool;
+}
+
+struct NoTransactionFaults;
+
+impl TransactionFaults for NoTransactionFaults {
+    fn fail_at(&self, _point: FaultPoint) -> bool {
+        false
+    }
 }
 
 impl fmt::Debug for ManagedFilesPlan {
@@ -466,6 +496,284 @@ pub fn plan_init(
         .map_err(|reason| planning_failure(*request, reason, inspect_manifest_state(start)))
 }
 
+pub fn execute_init(
+    source: &impl HostSource,
+    start: &Path,
+    runtime: &Path,
+    request: &InitRequest,
+) -> ManagedFilesOutcome {
+    execute_init_core(source, start, runtime, request, || {}, &NoTransactionFaults)
+}
+
+fn execute_init_core(
+    source: &impl HostSource,
+    start: &Path,
+    runtime: &Path,
+    request: &InitRequest,
+    post_lock_hook: impl FnOnce(),
+    faults: &impl TransactionFaults,
+) -> ManagedFilesOutcome {
+    let plan_before = match plan_init(source, start, request) {
+        Ok(plan) => plan,
+        Err(failure) => {
+            return ManagedFilesOutcome {
+                report: failure.report,
+            };
+        }
+    };
+    if request.dry_run {
+        return ManagedFilesOutcome {
+            report: plan_before.report.clone(),
+        };
+    }
+
+    let acquired_at = match unix_seconds_now() {
+        Ok(value) => value,
+        Err(reason) => return managed_failure_outcome(&plan_before, reason),
+    };
+    let record = match ProcessIdentity::current()
+        .and_then(|owner| LeaseRecord::new(owner, plan_before.repository_hash, "init", acquired_at))
+    {
+        Ok(record) => record,
+        Err(reason) => return managed_failure_outcome(&plan_before, reason),
+    };
+    let _lease = match UserLease::acquire(runtime, record) {
+        Ok(lease) => lease,
+        Err(reason) => return managed_failure_outcome(&plan_before, reason),
+    };
+
+    post_lock_hook();
+    let plan_after = match plan_init(source, plan_before.root.root(), request) {
+        Ok(plan) if managed_plans_match(&plan_before, &plan) => plan,
+        Ok(_) | Err(_) => return managed_failure_outcome(&plan_before, Reason::EvidenceChanged),
+    };
+    if previous_applied_matches(&plan_after) {
+        return unchanged_outcome(&plan_after);
+    }
+
+    match apply_init_transaction(&plan_after, faults) {
+        Ok(()) => ManagedFilesOutcome {
+            report: plan_after.report.clone(),
+        },
+        Err(reason) => managed_failure_outcome(&plan_after, reason),
+    }
+}
+
+fn apply_init_transaction(
+    plan: &ManagedFilesPlan,
+    faults: &impl TransactionFaults,
+) -> Result<(), Reason> {
+    let repository = HeldDirectory::open(plan.root.root(), None)?;
+    let metadata = HeldDirectory::open(plan.root.metadata(), None)?;
+    repository.ensure_replaceable(CONFIGURATION_PATH)?;
+    repository.ensure_replaceable(AGENTS_PATH)?;
+    if repository.precondition(CONFIGURATION_PATH)?
+        != FilePrecondition::from(&plan.configuration.before)
+        || repository.precondition(AGENTS_PATH)?
+            != FilePrecondition::from(&plan.agents_policy.before)
+    {
+        return Err(Reason::EvidenceChanged);
+    }
+
+    let (private, private_created) =
+        HeldDirectory::open_or_create_private_tracked(&metadata, "agent-lowmem", 0o700)?;
+    let journal_before = private.read_optional("restoration-v1.json", MAX_MANIFEST_BYTES)?;
+    if journal_before != plan.journal.before {
+        if private_created {
+            drop(private);
+            let _ = metadata.remove_empty_child("agent-lowmem");
+        }
+        return Err(Reason::EvidenceChanged);
+    }
+    if !valid_private_journal(&journal_before) {
+        return Err(Reason::ManagedFileConflict);
+    }
+
+    let prepared_bytes = serialize_manifest(&plan.journal.prepared)?;
+    let applied_bytes = serialize_manifest(&plan.journal.applied)?;
+    let mut configuration_written = false;
+    let mut agents_written = false;
+    let mut journal_is_applied = false;
+    let transaction = (|| {
+        private.replace_atomic(
+            "restoration-v1.json",
+            &FilePrecondition::from(&journal_before),
+            &prepared_bytes,
+            0o600,
+        )?;
+        fault(faults, FaultPoint::PreparedDurable)?;
+
+        configuration_written =
+            apply_planned_file(&repository, CONFIGURATION_PATH, &plan.configuration)?;
+        fault(faults, FaultPoint::ConfigurationWritten)?;
+        agents_written = apply_planned_file(&repository, AGENTS_PATH, &plan.agents_policy)?;
+        fault(faults, FaultPoint::AgentsWritten)?;
+
+        verify_planned_file(&repository, CONFIGURATION_PATH, &plan.configuration)?;
+        verify_planned_file(&repository, AGENTS_PATH, &plan.agents_policy)?;
+        fault(faults, FaultPoint::TargetsVerified)?;
+
+        let prepared = private.read_optional("restoration-v1.json", MAX_MANIFEST_BYTES)?;
+        if optional_bytes(&prepared) != Some(prepared_bytes.as_slice()) {
+            return Err(Reason::ManagedFileConflict);
+        }
+        private.replace_atomic(
+            "restoration-v1.json",
+            &FilePrecondition::from(&prepared),
+            &applied_bytes,
+            0o600,
+        )?;
+        journal_is_applied = true;
+        fault(faults, FaultPoint::AppliedJournalDurable)
+    })();
+
+    if let Err(reason) = transaction {
+        let rolled_back = rollback_init(
+            plan,
+            &repository,
+            &private,
+            configuration_written,
+            agents_written,
+            journal_is_applied,
+        )
+        .is_ok();
+        drop(private);
+        if rolled_back && private_created && metadata.remove_empty_child("agent-lowmem").is_err() {
+            return Err(Reason::InternalError);
+        }
+        return if rolled_back {
+            Err(reason)
+        } else {
+            Err(Reason::InternalError)
+        };
+    }
+    Ok(())
+}
+
+fn apply_planned_file(
+    directory: &HeldDirectory,
+    name: &str,
+    file: &PlannedFile,
+) -> Result<bool, Reason> {
+    if matches!(
+        file.action,
+        ManagedAction::Unchanged | ManagedAction::Preserve
+    ) {
+        return Ok(false);
+    }
+    let target = file.target.as_deref().ok_or(Reason::InternalError)?;
+    let mode = file.target_mode.ok_or(Reason::InternalError)?;
+    directory.replace_atomic(name, &FilePrecondition::from(&file.before), target, mode)?;
+    Ok(true)
+}
+
+fn verify_planned_file(
+    directory: &HeldDirectory,
+    name: &str,
+    file: &PlannedFile,
+) -> Result<(), Reason> {
+    let current = directory.read_optional(
+        name,
+        if name == AGENTS_PATH {
+            MAX_AGENTS_BYTES
+        } else {
+            MAX_CONFIGURATION_BYTES
+        },
+    )?;
+    if matches!(file.action, ManagedAction::Preserve) {
+        return (current == file.before)
+            .then_some(())
+            .ok_or(Reason::ManagedFileConflict);
+    }
+    optional_matches_target(&current, file)
+        .then_some(())
+        .ok_or(Reason::ManagedFileConflict)
+}
+
+fn rollback_init(
+    plan: &ManagedFilesPlan,
+    repository: &HeldDirectory,
+    private: &HeldDirectory,
+    configuration_written: bool,
+    agents_written: bool,
+    journal_is_applied: bool,
+) -> Result<(), Reason> {
+    if journal_is_applied {
+        let current = private.read_optional("restoration-v1.json", MAX_MANIFEST_BYTES)?;
+        let applied = serialize_manifest(&plan.journal.applied)?;
+        if optional_bytes(&current) != Some(applied.as_slice()) {
+            return Err(Reason::InternalError);
+        }
+        private.replace_atomic(
+            "restoration-v1.json",
+            &FilePrecondition::from(&current),
+            &serialize_manifest(&plan.journal.prepared)?,
+            0o600,
+        )?;
+    }
+    if agents_written {
+        rollback_planned_file(repository, AGENTS_PATH, &plan.agents_policy)?;
+    }
+    if configuration_written {
+        rollback_planned_file(repository, CONFIGURATION_PATH, &plan.configuration)?;
+    }
+    let current = private.read_optional("restoration-v1.json", MAX_MANIFEST_BYTES)?;
+    restore_optional_file(
+        private,
+        "restoration-v1.json",
+        &current,
+        &plan.journal.before,
+    )
+}
+
+fn rollback_planned_file(
+    directory: &HeldDirectory,
+    name: &str,
+    file: &PlannedFile,
+) -> Result<(), Reason> {
+    let limit = if name == AGENTS_PATH {
+        MAX_AGENTS_BYTES
+    } else {
+        MAX_CONFIGURATION_BYTES
+    };
+    let current = directory.read_optional(name, limit)?;
+    if !optional_matches_target(&current, file) {
+        return Err(Reason::InternalError);
+    }
+    restore_optional_file(directory, name, &current, &file.before)
+}
+
+fn restore_optional_file(
+    directory: &HeldDirectory,
+    name: &str,
+    current: &OptionalFile,
+    before: &OptionalFile,
+) -> Result<(), Reason> {
+    match before {
+        OptionalFile::Absent => directory.remove_exact(name, &FilePrecondition::from(current)),
+        OptionalFile::Regular { bytes, mode, .. } => {
+            directory.replace_atomic(name, &FilePrecondition::from(current), bytes, *mode)
+        }
+    }
+}
+
+fn optional_matches_target(current: &OptionalFile, file: &PlannedFile) -> bool {
+    match (current, file.target.as_deref(), file.target_mode) {
+        (OptionalFile::Regular { bytes, mode, .. }, Some(target), Some(target_mode)) => {
+            bytes == target && *mode == target_mode
+        }
+        _ => false,
+    }
+}
+
+fn fault(faults: &impl TransactionFaults, point: FaultPoint) -> Result<(), Reason> {
+    if faults.fail_at(point) {
+        Err(Reason::InternalError)
+    } else {
+        Ok(())
+    }
+}
+
 fn plan_init_inner(start: &Path, request: InitRequest) -> Result<ManagedFilesPlan, Reason> {
     let root = find_git_repository(start)
         .map_err(|_| Reason::RepositoryUnsupported)?
@@ -698,6 +1006,7 @@ fn plan_init_inner(start: &Path, request: InitRequest) -> Result<ManagedFilesPla
 pub(crate) fn managed_plans_match(before: &ManagedFilesPlan, after: &ManagedFilesPlan) -> bool {
     before.command == after.command
         && before.request == after.request
+        && before.root == after.root
         && before.repository_hash == after.repository_hash
         && before.evidence == after.evidence
         && before.configuration == after.configuration
@@ -1033,15 +1342,22 @@ fn agents_restoration(
         DestinationAction::Replace
     };
     let target_mode = optional_mode(before).unwrap_or(0o600) as u16;
+    let stable_baseline = previous
+        .map(|previous| previous.stable_baseline.clone())
+        .unwrap_or(PriorManagedState::Absent);
+    let original_document_was_absent = previous
+        .map(|previous| previous.document_was_absent)
+        .unwrap_or(document_was_absent);
+    let inserted_separator = previous
+        .map(|previous| previous.inserted_separator.clone())
+        .unwrap_or_else(|| edit.inserted_separator.clone());
     Ok(AgentsRestoration {
         ownership: Ownership::Managed,
         action,
-        document_was_absent,
+        document_was_absent: original_document_was_absent,
         immediate_before: immediate.clone(),
         target: Some(OwnedBytes::new(target_bytes)?),
-        stable_baseline: previous
-            .map(|previous| previous.stable_baseline.clone())
-            .unwrap_or(immediate),
+        stable_baseline,
         before_mode: optional_mode(before).map(|mode| mode as u16),
         target_mode: Some(target_mode),
         managed_span: ManagedSpan {
@@ -1049,7 +1365,7 @@ fn agents_restoration(
                 .map_err(|_| Reason::ManagedFileConflict)?,
             end: u32::try_from(edit.managed_span.end).map_err(|_| Reason::ManagedFileConflict)?,
         },
-        inserted_separator: edit.inserted_separator.clone(),
+        inserted_separator,
         prefix_sha256: digest_bytes(&edit.target_bytes[..edit.managed_span.start]),
         suffix_sha256: digest_bytes(&edit.target_bytes[edit.managed_span.end..]),
     })
@@ -1145,6 +1461,15 @@ fn optional_mode(file: &OptionalFile) -> Option<u32> {
     }
 }
 
+fn valid_private_journal(file: &OptionalFile) -> bool {
+    match file {
+        OptionalFile::Absent => true,
+        OptionalFile::Regular {
+            mode, owner_uid, ..
+        } => *mode == 0o600 && *owner_uid == rustix::process::geteuid().as_raw(),
+    }
+}
+
 fn optional_digest(file: &OptionalFile) -> Option<String> {
     match file {
         OptionalFile::Absent => None,
@@ -1226,5 +1551,398 @@ fn failure_code(reason: Reason) -> i32 {
         Reason::EvidenceChanged => 75,
         Reason::InternalError => 70,
         _ => 64,
+    }
+}
+
+fn previous_applied_matches(plan: &ManagedFilesPlan) -> bool {
+    if plan.report.manifest_state != ManifestState::Applied
+        || optional_mode(&plan.journal.before) != Some(0o600)
+        || !matches!(
+            plan.configuration.action,
+            ManagedAction::Unchanged | ManagedAction::Preserve
+        )
+        || plan.agents_policy.action != ManagedAction::Unchanged
+    {
+        return false;
+    }
+    let Ok(metadata) = HeldDirectory::open(plan.root.metadata(), None) else {
+        return false;
+    };
+    if HeldDirectory::open_child(&metadata, "agent-lowmem", Some(0o700)).is_err() {
+        return false;
+    }
+    let Some(bytes) = optional_bytes(&plan.journal.before) else {
+        return false;
+    };
+    let Ok(previous) = parse_manifest(bytes) else {
+        return false;
+    };
+    let configuration_matches = match previous.configuration.ownership {
+        Ownership::Managed => previous
+            .configuration
+            .target
+            .as_ref()
+            .is_some_and(|target| {
+                Some(target.bytes.as_slice()) == plan.configuration.target.as_deref()
+            }),
+        Ownership::External => {
+            previous.configuration.external_sha256 == optional_digest(&plan.configuration.before)
+        }
+    };
+    let desired_agents = &plan.journal.applied.agents_policy;
+    configuration_matches
+        && previous.agents_policy.target == desired_agents.target
+        && previous.agents_policy.managed_span == desired_agents.managed_span
+        && previous.agents_policy.prefix_sha256 == desired_agents.prefix_sha256
+        && previous.agents_policy.suffix_sha256 == desired_agents.suffix_sha256
+        && previous.agents_policy.target_mode == desired_agents.target_mode
+}
+
+fn unchanged_outcome(plan: &ManagedFilesPlan) -> ManagedFilesOutcome {
+    let mut report = plan.report.clone();
+    report.outcome = ManagedOutcome::Unchanged;
+    if let Some(journal) = report
+        .files
+        .iter_mut()
+        .find(|file| file.identity == ManagedIdentity::RestorationManifest)
+    {
+        journal.action = ManagedAction::Unchanged;
+        journal.target_sha256 = journal.before_sha256.clone();
+    }
+    ManagedFilesOutcome { report }
+}
+
+fn managed_failure_outcome(plan: &ManagedFilesPlan, reason: Reason) -> ManagedFilesOutcome {
+    let mut report = plan.report.clone();
+    let code = if reason == Reason::ManagedFileConflict {
+        78
+    } else {
+        failure_code(reason)
+    };
+    report.outcome = if reason == Reason::ManagedFileConflict {
+        ManagedOutcome::Conflict
+    } else {
+        ManagedOutcome::Failed
+    };
+    report.result = ManagedResult::new(code, reason).unwrap_or(ManagedResult {
+        code: 70,
+        reason: Reason::InternalError,
+    });
+    ManagedFilesOutcome { report }
+}
+
+fn unix_seconds_now() -> Result<u64, Reason> {
+    let seconds = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|_| Reason::InternalError)?
+        .as_secs();
+    (seconds > 0)
+        .then_some(seconds)
+        .ok_or(Reason::InternalError)
+}
+
+#[cfg(test)]
+mod transaction_tests {
+    use super::{FaultPoint, TransactionFaults, execute_init_core};
+    use crate::{
+        cli::InitRequest,
+        host::{HostReadError, HostSource},
+        result::Reason,
+    };
+    use std::{
+        collections::BTreeMap,
+        fs,
+        path::PathBuf,
+        sync::atomic::{AtomicU64, Ordering},
+        time::{SystemTime, UNIX_EPOCH},
+    };
+
+    static NEXT_FIXTURE: AtomicU64 = AtomicU64::new(0);
+
+    struct OneFault(FaultPoint);
+
+    impl TransactionFaults for OneFault {
+        fn fail_at(&self, point: FaultPoint) -> bool {
+            self.0 == point
+        }
+    }
+
+    #[test]
+    fn every_durable_fault_rolls_back_the_first_init_completely() {
+        for point in [
+            FaultPoint::PreparedDurable,
+            FaultPoint::ConfigurationWritten,
+            FaultPoint::AgentsWritten,
+            FaultPoint::TargetsVerified,
+            FaultPoint::AppliedJournalDurable,
+        ] {
+            let fixture = Fixture::new();
+            let outcome = execute_init_core(
+                &SupportedHost::reference(),
+                &fixture.root,
+                &fixture.runtime,
+                &InitRequest {
+                    dry_run: false,
+                    json: true,
+                },
+                || {},
+                &OneFault(point),
+            );
+
+            assert_eq!(outcome.report.result.code, 70, "fault: {point:?}");
+            assert_eq!(
+                outcome.report.result.reason,
+                Reason::InternalError,
+                "fault: {point:?}"
+            );
+            assert!(!fixture.root.join(".agent-lowmem.json").exists());
+            assert!(!fixture.root.join("AGENTS.md").exists());
+            assert!(!fixture.root.join(".git/agent-lowmem").exists());
+        }
+    }
+
+    #[test]
+    fn every_durable_fault_restores_the_prior_applied_transaction() {
+        for point in [
+            FaultPoint::PreparedDurable,
+            FaultPoint::ConfigurationWritten,
+            FaultPoint::AgentsWritten,
+            FaultPoint::TargetsVerified,
+            FaultPoint::AppliedJournalDurable,
+        ] {
+            let fixture = Fixture::new();
+            let request = InitRequest {
+                dry_run: false,
+                json: true,
+            };
+            let first = execute_init_core(
+                &SupportedHost::reference(),
+                &fixture.root,
+                &fixture.runtime,
+                &request,
+                || {},
+                &OneFault(FaultPoint::Never),
+            );
+            assert_eq!(first.report.result.reason, Reason::Completed);
+            fs::create_dir_all(fixture.root.join("node_modules/eslint")).unwrap();
+            fs::write(
+                fixture.root.join("node_modules/eslint/package.json"),
+                "{\"name\":\"eslint\",\"version\":\"10.9.1\"}\n",
+            )
+            .unwrap();
+            fs::write(
+                fixture.root.join("package.json"),
+                r#"{"name":"fixture","private":true,"packageManager":"npm@12.0.2","scripts":{"test":"vitest run","lint":"eslint ."}}"#,
+            )
+            .unwrap();
+            let before = managed_bytes(&fixture.root);
+
+            let outcome = execute_init_core(
+                &SupportedHost::reference(),
+                &fixture.root,
+                &fixture.runtime,
+                &request,
+                || {},
+                &OneFault(point),
+            );
+
+            assert_eq!(outcome.report.result.code, 70, "fault: {point:?}");
+            assert_eq!(managed_bytes(&fixture.root), before, "fault: {point:?}");
+            let journal: serde_json::Value = serde_json::from_slice(&before.2).unwrap();
+            assert_eq!(journal["state"], "applied");
+        }
+    }
+
+    #[test]
+    fn post_lock_source_drift_returns_75_before_the_prepared_journal() {
+        for identity in ["package", "lockfile", "tool"] {
+            let fixture = Fixture::new();
+            let root = fixture.root.clone();
+            let outcome = execute_init_core(
+                &SupportedHost::reference(),
+                &fixture.root,
+                &fixture.runtime,
+                &InitRequest {
+                    dry_run: false,
+                    json: true,
+                },
+                || {
+                    match identity {
+                    "package" => fs::write(
+                        root.join("package.json"),
+                        r#"{"name":"changed","private":true,"packageManager":"npm@12.0.2","scripts":{"test":"vitest run"}}"#,
+                    )
+                    .unwrap(),
+                    "lockfile" => {
+                        fs::write(root.join("package-lock.json"), "{\"lockfileVersion\":3,\"changed\":true}\n")
+                            .unwrap()
+                    }
+                    "tool" => fs::write(
+                        root.join("node_modules/vitest/package.json"),
+                        "{\"name\":\"vitest\",\"version\":\"4.1.12\"}\n",
+                    )
+                    .unwrap(),
+                    _ => unreachable!(),
+                }
+                },
+                &OneFault(FaultPoint::Never),
+            );
+
+            assert_eq!(outcome.report.result.code, 75, "identity: {identity}");
+            assert_eq!(
+                outcome.report.result.reason,
+                Reason::EvidenceChanged,
+                "identity: {identity}"
+            );
+            assert!(!fixture.root.join(".agent-lowmem.json").exists());
+            assert!(!fixture.root.join("AGENTS.md").exists());
+            assert!(!fixture.root.join(".git/agent-lowmem").exists());
+        }
+    }
+
+    #[test]
+    fn post_lock_destination_drift_returns_75_without_overwriting_it() {
+        for identity in ["configuration", "agents", "journal"] {
+            let fixture = Fixture::new();
+            let root = fixture.root.clone();
+            let outcome = execute_init_core(
+                &SupportedHost::reference(),
+                &fixture.root,
+                &fixture.runtime,
+                &InitRequest {
+                    dry_run: false,
+                    json: true,
+                },
+                || {
+                    match identity {
+                    "configuration" => fs::write(
+                        root.join(".agent-lowmem.json"),
+                        r#"{"version":1,"packageManager":"npm","operations":{"checks":{"script":"test","timeoutSeconds":300}}}"#,
+                    )
+                    .unwrap(),
+                    "agents" => fs::write(root.join("AGENTS.md"), "external policy\n").unwrap(),
+                    "journal" => {
+                        fs::create_dir_all(root.join(".git/agent-lowmem")).unwrap();
+                        fs::write(
+                            root.join(".git/agent-lowmem/restoration-v1.json"),
+                            "external journal drift\n",
+                        )
+                        .unwrap();
+                    }
+                    _ => unreachable!(),
+                }
+                },
+                &OneFault(FaultPoint::Never),
+            );
+
+            assert_eq!(outcome.report.result.code, 75, "identity: {identity}");
+            assert_eq!(
+                outcome.report.result.reason,
+                Reason::EvidenceChanged,
+                "identity: {identity}"
+            );
+            match identity {
+                "configuration" => assert!(
+                    fs::read_to_string(root.join(".agent-lowmem.json"))
+                        .unwrap()
+                        .contains("checks")
+                ),
+                "agents" => assert_eq!(
+                    fs::read_to_string(root.join("AGENTS.md")).unwrap(),
+                    "external policy\n"
+                ),
+                "journal" => assert_eq!(
+                    fs::read_to_string(root.join(".git/agent-lowmem/restoration-v1.json")).unwrap(),
+                    "external journal drift\n"
+                ),
+                _ => unreachable!(),
+            }
+        }
+    }
+
+    struct Fixture {
+        root: PathBuf,
+        runtime: PathBuf,
+    }
+
+    impl Fixture {
+        fn new() -> Self {
+            let serial = NEXT_FIXTURE.fetch_add(1, Ordering::Relaxed);
+            let nanos = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos();
+            let base = std::env::temp_dir().join(format!(
+                "agent-lowmem-transaction-unit-{nanos}-{}-{serial}",
+                std::process::id()
+            ));
+            let root = base.join("repository");
+            fs::create_dir_all(root.join(".git")).unwrap();
+            fs::create_dir_all(root.join("node_modules/vitest")).unwrap();
+            fs::write(
+                root.join("package.json"),
+                r#"{"name":"fixture","private":true,"packageManager":"npm@12.0.2","scripts":{"test":"vitest run"}}"#,
+            )
+            .unwrap();
+            fs::write(root.join("package-lock.json"), "{\"lockfileVersion\":3}\n").unwrap();
+            fs::write(
+                root.join("node_modules/vitest/package.json"),
+                "{\"name\":\"vitest\",\"version\":\"4.1.11\"}\n",
+            )
+            .unwrap();
+            Self {
+                root: fs::canonicalize(root).unwrap(),
+                runtime: base.join("runtime"),
+            }
+        }
+    }
+
+    impl Drop for Fixture {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(self.root.parent().unwrap());
+        }
+    }
+
+    fn managed_bytes(root: &std::path::Path) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
+        (
+            fs::read(root.join(".agent-lowmem.json")).unwrap(),
+            fs::read(root.join("AGENTS.md")).unwrap(),
+            fs::read(root.join(".git/agent-lowmem/restoration-v1.json")).unwrap(),
+        )
+    }
+
+    struct SupportedHost {
+        values: BTreeMap<&'static str, &'static str>,
+    }
+
+    impl SupportedHost {
+        fn reference() -> Self {
+            Self {
+                values: BTreeMap::from([
+                    ("kern.osproductversion", "26.6.2"),
+                    ("hw.model", "Mac14,15"),
+                    ("machdep.cpu.brand_string", "Apple M2"),
+                    ("hw.memsize", "8589934592"),
+                    ("hw.pagesize", "16384"),
+                ]),
+            }
+        }
+    }
+
+    impl HostSource for SupportedHost {
+        fn operating_system(&self) -> &str {
+            "macos"
+        }
+
+        fn architecture(&self) -> &str {
+            "aarch64"
+        }
+
+        fn read(&self, key: &'static str) -> Result<String, HostReadError> {
+            self.values
+                .get(key)
+                .map(|value| (*value).to_owned())
+                .ok_or(HostReadError::Missing(key))
+        }
     }
 }

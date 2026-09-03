@@ -334,10 +334,7 @@ fn valid_agents(agents: &AgentsRestoration) -> bool {
             agents.target_mode,
         )
         && (!agents.document_was_absent
-            || (matches!(agents.action, DestinationAction::Create)
-                && matches!(agents.immediate_before, PriorManagedState::Absent)
-                && agents.before_mode.is_none()
-                && agents.managed_span.start == 0
+            || (matches!(agents.stable_baseline, PriorManagedState::Absent)
                 && agents.inserted_separator.is_empty()))
 }
 
