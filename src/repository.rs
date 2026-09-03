@@ -103,6 +103,10 @@ impl RunPlan {
         &self.evidence
     }
 
+    pub(crate) fn root(&self) -> &Path {
+        self.root.as_path()
+    }
+
     pub fn redacted(&self) -> RedactedRunPlan<'_> {
         RedactedRunPlan {
             package_manager: &self.package_manager,

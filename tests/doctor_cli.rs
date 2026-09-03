@@ -178,16 +178,16 @@ fn zero_child_sentinels_detect_attempts_but_doctor_starts_none() {
 }
 
 #[test]
-fn zero_child_source_guard_rejects_launches_and_unsafe_blocks() {
+fn source_guard_confines_launches_and_rejects_unsafe_blocks() {
     let source_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
     let mut source_files = Vec::new();
     collect_rust_files(&source_root, &mut source_files);
 
     for source_file in source_files {
         let source = fs::read_to_string(&source_file).unwrap();
+        let is_managed_process_boundary =
+            source_file.strip_prefix(&source_root).unwrap() == Path::new("process.rs");
         for forbidden in [
-            "std::process::Command",
-            "Command::new",
             "node --version",
             "npm config",
             "pnpm config",
@@ -199,6 +199,15 @@ fn zero_child_source_guard_rejects_launches_and_unsafe_blocks() {
                 "{} contains forbidden production token {forbidden}",
                 source_file.display()
             );
+        }
+        if !is_managed_process_boundary {
+            for forbidden in ["std::process::Command", "Command::new"] {
+                assert!(
+                    !source.contains(forbidden),
+                    "{} starts a child outside the managed process boundary via {forbidden}",
+                    source_file.display()
+                );
+            }
         }
     }
 }

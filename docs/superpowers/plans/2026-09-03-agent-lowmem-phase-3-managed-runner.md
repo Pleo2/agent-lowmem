@@ -232,37 +232,39 @@ git commit -m "feat: enforce the per-user operation lease"
 **Files:**
 - Create: `src/process.rs`
 - Modify: `src/lib.rs`
+- Modify: `src/repository.rs`
 - Modify: `Cargo.toml`
 - Modify: `Cargo.lock`
 - Modify: `docs/dependencies-v1.md`
-- Test: `src/process.rs`
+- Test: `tests/run_process.rs`
+- Test: `tests/doctor_cli.rs`
 
 **Interfaces:**
 - Consumes: revalidated `RunPlan` and `UserLease`.
 - Produces: `ManagedChild`, `OwnedProcessGroup`, `GroupController`, `SignalSource`, and `NativeSignalSource`.
 
-- [ ] **Step 1: Review and pin `signal-hook`**
+- [x] **Step 1: Review and pin `signal-hook`**
 
 Enable only synchronous iterator functionality. Record its license, MSRV, libc/registry transitive dependencies, handler semantics, release-size delta, and lack of async runtime.
 
-- [ ] **Step 2: Write failing spawn-boundary tests**
+- [x] **Step 2: Write failing spawn-boundary tests**
 
 Assert inherited stdio, current Git root, exact executable/arguments, `AGENT_LOWMEM_ACTIVE=1`, new PGID equal to child PID, immediate leader identity, and no shell intermediary.
 
-- [ ] **Step 3: Confirm RED and implement minimal launch**
+- [x] **Step 3: Confirm RED and implement minimal launch**
 
-Run: `cargo test process::tests -j 1 -- --test-threads=1`
+Run: `cargo test --test run_process -j 1 -- --test-threads=1`
 
 Use `CommandExt::process_group(0)`, `Stdio::inherit()`, and the immutable launch array. Install the signal listener before spawn, update the lease after identity capture, and clean the group on post-spawn setup failure.
 
-- [ ] **Step 4: Verify and commit**
+- [x] **Step 4: Verify and commit**
 
-Run: `cargo test process::tests -j 1 -- --test-threads=1`
+Run: `cargo test --test run_process -j 1 -- --test-threads=1`
 
 Run: `cargo test -j 1 -- --test-threads=1`
 
 ```bash
-git add Cargo.toml Cargo.lock docs/dependencies-v1.md src/process.rs src/lib.rs
+git add Cargo.toml Cargo.lock docs/dependencies-v1.md docs/superpowers/plans/2026-09-03-agent-lowmem-phase-3-managed-runner.md src/process.rs src/lib.rs src/repository.rs tests/run_process.rs tests/doctor_cli.rs
 git commit -m "feat: launch an owned package manager group"
 ```
 

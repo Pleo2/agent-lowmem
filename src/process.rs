@@ -1,0 +1,237 @@
+use crate::{
+    lock::{ChildGroupIdentity, ProcessIdentity, UserLease},
+    repository::RunPlan,
+    result::Reason,
+};
+use rustix::process::{Pid, Signal, getpgid, kill_process_group, test_kill_process_group};
+use signal_hook::{
+    consts::signal::{SIGHUP, SIGINT, SIGTERM},
+    iterator::{Handle, Signals},
+};
+use std::{
+    fmt, io,
+    os::unix::process::CommandExt,
+    process::{Child, Command, ExitStatus, Stdio},
+    sync::mpsc::{self, Receiver, RecvTimeoutError},
+    thread::{self, JoinHandle},
+    time::Duration,
+};
+
+pub struct ManagedChild {
+    child: Child,
+    group: OwnedProcessGroup,
+}
+
+impl ManagedChild {
+    pub fn id(&self) -> u32 {
+        self.child.id()
+    }
+
+    pub const fn group(&self) -> &OwnedProcessGroup {
+        &self.group
+    }
+
+    pub fn try_wait(&mut self) -> io::Result<Option<ExitStatus>> {
+        self.child.try_wait()
+    }
+
+    pub fn wait(&mut self) -> io::Result<ExitStatus> {
+        self.child.wait()
+    }
+}
+
+impl fmt::Debug for ManagedChild {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ManagedChild")
+            .field("group", &self.group)
+            .finish_non_exhaustive()
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct OwnedProcessGroup {
+    id: Pid,
+    leader_start_identity: u64,
+}
+
+impl OwnedProcessGroup {
+    pub fn id(self) -> i32 {
+        self.id.as_raw_nonzero().get()
+    }
+
+    pub fn is_live(self) -> bool {
+        let Ok(identity) = ProcessIdentity::for_pid(self.id()) else {
+            return false;
+        };
+        identity.start_identity() == self.leader_start_identity
+            && getpgid(Some(self.id)).is_ok_and(|actual| actual == self.id)
+            && test_kill_process_group(self.id).is_ok()
+    }
+}
+
+impl fmt::Debug for OwnedProcessGroup {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("OwnedProcessGroup { redacted: true }")
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ManagedSignal {
+    Interrupt,
+    Terminate,
+    Hangup,
+    Kill,
+}
+
+impl ManagedSignal {
+    const fn native(self) -> Signal {
+        match self {
+            Self::Interrupt => Signal::INT,
+            Self::Terminate => Signal::TERM,
+            Self::Hangup => Signal::HUP,
+            Self::Kill => Signal::KILL,
+        }
+    }
+}
+
+pub trait GroupController {
+    fn is_live(&self) -> bool;
+    fn send(&self, signal: ManagedSignal) -> Result<(), Reason>;
+}
+
+impl GroupController for OwnedProcessGroup {
+    fn is_live(&self) -> bool {
+        (*self).is_live()
+    }
+
+    fn send(&self, signal: ManagedSignal) -> Result<(), Reason> {
+        if !self.is_live() {
+            return Err(Reason::InternalError);
+        }
+        kill_process_group(self.id, signal.native()).map_err(|_| Reason::InternalError)
+    }
+}
+
+pub fn spawn_managed(
+    plan: &RunPlan,
+    lease: &mut UserLease,
+) -> Result<(ManagedChild, NativeSignalSource), Reason> {
+    let signals = NativeSignalSource::install()?;
+    let launch = &plan.policy().launch;
+    let mut command = Command::new(&launch.executable);
+    command
+        .args(&launch.arguments)
+        .current_dir(plan.root())
+        .stdin(Stdio::inherit())
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit())
+        .env("AGENT_LOWMEM_ACTIVE", "1")
+        .process_group(0);
+    let mut child = command.spawn().map_err(|_| Reason::InternalError)?;
+    let Some(group_id) = Pid::from_raw(child.id() as i32) else {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(Reason::InternalError);
+    };
+    let leader = match ProcessIdentity::for_pid(child.id() as i32) {
+        Ok(identity) => identity,
+        Err(reason) => {
+            cleanup_failed_spawn(group_id, &mut child);
+            return Err(reason);
+        }
+    };
+    let group = OwnedProcessGroup {
+        id: group_id,
+        leader_start_identity: leader.start_identity(),
+    };
+    if !group.is_live() {
+        cleanup_failed_spawn(group_id, &mut child);
+        return Err(Reason::InternalError);
+    }
+    if let Err(reason) =
+        lease.set_child_group(ChildGroupIdentity::new(group.id(), leader.start_identity()))
+    {
+        cleanup_failed_spawn(group_id, &mut child);
+        return Err(reason);
+    }
+    Ok((ManagedChild { child, group }, signals))
+}
+
+fn cleanup_failed_spawn(group_id: Pid, child: &mut Child) {
+    let _ = kill_process_group(group_id, Signal::KILL);
+    let _ = child.wait();
+}
+
+pub trait SignalSource {
+    fn try_recv(&mut self) -> Option<i32>;
+    fn recv_timeout(&mut self, timeout: Duration) -> Result<Option<i32>, Reason>;
+    fn shutdown(&mut self) -> Result<(), Reason>;
+}
+
+pub struct NativeSignalSource {
+    receiver: Receiver<i32>,
+    handle: Handle,
+    thread: Option<JoinHandle<()>>,
+}
+
+impl NativeSignalSource {
+    pub fn install() -> Result<Self, Reason> {
+        let mut signals =
+            Signals::new([SIGINT, SIGTERM, SIGHUP]).map_err(|_| Reason::InternalError)?;
+        let handle = signals.handle();
+        let (sender, receiver) = mpsc::channel();
+        let thread = thread::Builder::new()
+            .name("agent-lowmem-signals".to_owned())
+            .spawn(move || {
+                for signal in &mut signals {
+                    if sender.send(signal).is_err() {
+                        break;
+                    }
+                }
+            })
+            .map_err(|_| Reason::InternalError)?;
+        Ok(Self {
+            receiver,
+            handle,
+            thread: Some(thread),
+        })
+    }
+}
+
+impl SignalSource for NativeSignalSource {
+    fn try_recv(&mut self) -> Option<i32> {
+        self.receiver.try_recv().ok()
+    }
+
+    fn recv_timeout(&mut self, timeout: Duration) -> Result<Option<i32>, Reason> {
+        match self.receiver.recv_timeout(timeout) {
+            Ok(signal) => Ok(Some(signal)),
+            Err(RecvTimeoutError::Timeout) => Ok(None),
+            Err(RecvTimeoutError::Disconnected) => Err(Reason::InternalError),
+        }
+    }
+
+    fn shutdown(&mut self) -> Result<(), Reason> {
+        self.handle.close();
+        match self.thread.take() {
+            Some(thread) => thread.join().map_err(|_| Reason::InternalError),
+            None => Ok(()),
+        }
+    }
+}
+
+impl Drop for NativeSignalSource {
+    fn drop(&mut self) {
+        self.handle.close();
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
+}
+
+impl fmt::Debug for NativeSignalSource {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("NativeSignalSource { active: true }")
+    }
+}
