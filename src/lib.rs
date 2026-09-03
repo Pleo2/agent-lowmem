@@ -1,5 +1,6 @@
 #![forbid(unsafe_code)]
 
+pub mod adapter;
 pub mod cli;
 pub mod configuration;
 pub mod doctor;
