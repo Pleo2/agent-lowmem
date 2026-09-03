@@ -48,12 +48,18 @@ fn run() -> i32 {
     };
 
     match command {
+        CliCommand::Version => run_version(),
         CliCommand::Doctor { json } => run_doctor(json),
         CliCommand::GithubInspect { json } => run_github_inspect(json),
         CliCommand::Run(request) => run_managed(request),
         CliCommand::Init(request) => run_init(request),
         CliCommand::Restore(request) => run_restore(request),
     }
+}
+
+fn run_version() -> i32 {
+    let output = format!("agent-lowmem {}", env!("CARGO_PKG_VERSION"));
+    if write_stdout(&output).is_ok() { 0 } else { 70 }
 }
 
 fn run_github_inspect(json: bool) -> i32 {

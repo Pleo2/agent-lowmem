@@ -6,6 +6,7 @@ use std::ffi::OsString;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CliCommand {
+    Version,
     Doctor { json: bool },
     GithubInspect { json: bool },
     Run(RunRequest),
@@ -56,6 +57,7 @@ where
         .collect::<Result<Vec<_>, _>>()?;
 
     match tokens.as_slice() {
+        [flag] if flag == "--version" || flag == "-V" => Ok(CliCommand::Version),
         [command] if command == "doctor" => Ok(CliCommand::Doctor { json: false }),
         [command, flag] if command == "doctor" && flag == "--json" => {
             Ok(CliCommand::Doctor { json: true })
@@ -177,6 +179,16 @@ const fn invalid_cli() -> CliError {
 mod tests {
     use super::{CliCommand, InitRequest, RestoreRequest, RunRequest, parse};
     use crate::result::Reason;
+
+    #[test]
+    fn parses_only_the_supported_version_flags() {
+        assert_eq!(parse(["--version"]).unwrap(), CliCommand::Version);
+        assert_eq!(parse(["-V"]).unwrap(), CliCommand::Version);
+
+        for arguments in [vec!["version"], vec!["-v"], vec!["--version", "--json"]] {
+            assert_eq!(parse(arguments).unwrap_err().reason(), Reason::InvalidCli);
+        }
+    }
 
     #[test]
     fn parses_doctor_forms() {

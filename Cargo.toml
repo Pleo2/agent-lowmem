@@ -3,6 +3,11 @@ name = "agent-lowmem"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.85"
+license = "FSL-1.1-MIT"
+repository = "https://github.com/Pleo2/agent-lowmem"
+homepage = "https://agentlowmem.dev"
+description = "Native macOS resource guardrails for agentic development on low-memory Apple Silicon."
+readme = "README.md"
 publish = false
 
 [dependencies]
