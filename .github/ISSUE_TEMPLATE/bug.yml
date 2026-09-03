@@ -1,0 +1,62 @@
+name: Bug report
+description: Report a reproducible Agent Lowmem defect.
+title: "fix: "
+labels: ["bug"]
+body: [
+  {
+    "type": "markdown",
+    "attributes": {
+      "value": "Thank you for helping improve Agent Lowmem. Redact tokens, environment values, usernames, and absolute paths before submitting. Report security issues privately instead."
+    }
+  },
+  {
+    "type": "textarea",
+    "id": "summary",
+    "attributes": {
+      "label": "What happened?",
+      "description": "Describe the observed behavior and the behavior you expected.",
+      "placeholder": "A concise, reproducible description without private data."
+    },
+    "validations": { "required": true }
+  },
+  {
+    "type": "textarea",
+    "id": "reproduction",
+    "attributes": {
+      "label": "Minimal reproduction",
+      "description": "List bounded steps and sanitized output. Do not paste complete logs or environment files."
+    },
+    "validations": { "required": true }
+  },
+  {
+    "type": "input",
+    "id": "version",
+    "attributes": {
+      "label": "Agent Lowmem version",
+      "description": "Paste the output of agent-lowmem --version."
+    },
+    "validations": { "required": true }
+  },
+  {
+    "type": "dropdown",
+    "id": "macos",
+    "attributes": {
+      "label": "macOS version",
+      "options": ["macOS 14", "macOS 15", "macOS 26 or newer"]
+    },
+    "validations": { "required": true }
+  },
+  {
+    "type": "checkboxes",
+    "id": "privacy",
+    "attributes": {
+      "label": "Privacy check",
+      "options": [
+        {
+          "label": "I removed tokens, environment values, usernames, absolute paths, and unrelated machine data.",
+          "required": true
+        }
+      ]
+    }
+  }
+]

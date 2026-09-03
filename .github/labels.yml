@@ -1,0 +1,31 @@
+labels:
+- name: bug
+  color: "e85d75"
+  description: "A confirmed or reproducible defect."
+- name: enhancement
+  color: "8b83ff"
+  description: "A bounded improvement or new capability."
+- name: documentation
+  color: "50d8ff"
+  description: "Documentation-only work."
+- name: security
+  color: "b60205"
+  description: "Security hardening after responsible disclosure."
+- name: good first issue
+  color: "c9b6ff"
+  description: "A well-bounded entry point for a new contributor."
+- name: help wanted
+  color: "4f6cff"
+  description: "Maintainer guidance is available for contributors."
+- name: performance
+  color: "f39c12"
+  description: "Memory, CPU, latency, or binary-size work."
+- name: macos
+  color: "7f8c8d"
+  description: "Apple Silicon or macOS-specific behavior."
+- name: blocked
+  color: "2f3640"
+  description: "Cannot proceed until a documented dependency resolves."
+- name: release
+  color: "27ae60"
+  description: "Release engineering and distribution work."

@@ -1,0 +1,44 @@
+name: Feature proposal
+description: Propose a bounded improvement for low-memory agentic development.
+title: "feat: "
+labels: ["enhancement"]
+body: [
+  {
+    "type": "textarea",
+    "id": "problem",
+    "attributes": {
+      "label": "Problem",
+      "description": "What agentic workflow is difficult on a memory-constrained Mac?"
+    },
+    "validations": { "required": true }
+  },
+  {
+    "type": "textarea",
+    "id": "proposal",
+    "attributes": {
+      "label": "Bounded proposal",
+      "description": "Describe the smallest useful behavior and its resource impact."
+    },
+    "validations": { "required": true }
+  },
+  {
+    "type": "textarea",
+    "id": "alternatives",
+    "attributes": {
+      "label": "Alternatives",
+      "description": "What simpler approaches have you considered?"
+    },
+    "validations": { "required": true }
+  },
+  {
+    "type": "checkboxes",
+    "id": "scope",
+    "attributes": {
+      "label": "Project boundaries",
+      "options": [
+        { "label": "This preserves no-sudo, reversible, bounded execution.", "required": true },
+        { "label": "This is relevant to Apple Silicon and low-memory agentic work.", "required": true }
+      ]
+    }
+  }
+]
