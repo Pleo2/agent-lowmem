@@ -1,0 +1,5 @@
+packages:
+  - apps/*
+  - packages/*
+scriptShell: /bin/sh
+shellEmulator: false

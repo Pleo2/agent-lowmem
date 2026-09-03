@@ -252,17 +252,17 @@ pub(crate) struct CanonicalOperation {
 }
 ```
 
-- [ ] **Step 1: Add golden serialization tests** for npm root operations and sorted pnpm workspaces. Assert `$schema`, version 1, exact manager kind, two-space indentation, LF, one final newline, and stable key ordering.
+- [x] **Step 1: Add golden serialization tests** for npm root operations and sorted pnpm workspaces. Assert `$schema`, version 1, exact manager kind, two-space indentation, LF, one final newline, and stable key ordering.
 
-- [ ] **Step 2: Add canonical table tests** asserting exact names and timeouts: `test`, `typecheck`, and `lint` at 900 seconds; `build` at 1,800 seconds.
+- [x] **Step 2: Add canonical table tests** asserting exact names and timeouts: `test`, `typecheck`, and `lint` at 900 seconds; `build` at 1,800 seconds.
 
-- [ ] **Step 3: Confirm RED**
+- [x] **Step 3: Confirm RED**
 
 Run: `cargo test configuration::tests::serializes -j 1 -- --test-threads=1`
 
-- [ ] **Step 4: Derive `Serialize` for typed config values and implement deterministic bytes** through the borrowed `GeneratedConfig` wrapper with `serde_json::to_vec_pretty`, then append exactly one LF. Keep `RawConfig` as the only deserialization model and omit empty operation/workspace maps deterministically.
+- [x] **Step 4: Derive `Serialize` for typed config values and implement deterministic bytes** through the borrowed `GeneratedConfig` wrapper with `serde_json::to_vec_pretty`, then append exactly one LF. Keep `RawConfig` as the only deserialization model and omit empty operation/workspace maps deterministically.
 
-- [ ] **Step 5: Verify parser/serializer round-trip and schema compatibility**
+- [x] **Step 5: Verify parser/serializer round-trip and schema compatibility**
 
 ```rust
 let bytes = config.deterministic_bytes().unwrap();
@@ -272,10 +272,10 @@ assert_eq!(bytes.last(), Some(&b'\n'));
 
 Run: `cargo test configuration -j 1 -- --test-threads=1`
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
-git add src/configuration.rs tests/managed_files_configuration.rs tests/fixtures/managed-files
+git add -f src/configuration.rs tests/managed_files_configuration.rs tests/fixtures/managed-files docs/superpowers/plans/2026-09-03-agent-lowmem-phase-4-managed-files.md
 git commit -m "feat: render deterministic repository configuration"
 ```
 

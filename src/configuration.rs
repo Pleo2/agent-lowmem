@@ -1,5 +1,5 @@
 use crate::{repository::PackageManagerKind, result::Reason};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
 const SCHEMA_URL: &str = "https://agentlowmem.dev/schema/v1.json";
@@ -7,6 +7,39 @@ const CONFIG_VERSION: u8 = 1;
 pub(crate) const MIN_TIMEOUT_SECONDS: u16 = 60;
 pub(crate) const MAX_TIMEOUT_SECONDS: u16 = 3_600;
 pub(crate) const MAX_KEY_BYTES: usize = 32;
+
+// Introduced here as the deterministic generation contract; consumed by the Task 8 planner.
+#[allow(dead_code)]
+pub(crate) const CANONICAL_OPERATIONS: [CanonicalOperation; 4] = [
+    CanonicalOperation {
+        key: "test",
+        script: "test",
+        timeout_seconds: 900,
+    },
+    CanonicalOperation {
+        key: "typecheck",
+        script: "typecheck",
+        timeout_seconds: 900,
+    },
+    CanonicalOperation {
+        key: "lint",
+        script: "lint",
+        timeout_seconds: 900,
+    },
+    CanonicalOperation {
+        key: "build",
+        script: "build",
+        timeout_seconds: 1_800,
+    },
+];
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)]
+pub(crate) struct CanonicalOperation {
+    pub key: &'static str,
+    pub script: &'static str,
+    pub timeout_seconds: u16,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AgentLowmemConfig {
@@ -16,17 +49,56 @@ pub struct AgentLowmemConfig {
     pub workspaces: BTreeMap<String, WorkspaceConfig>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct OperationConfig {
     pub script: String,
     pub timeout_seconds: u16,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct WorkspaceConfig {
     pub path: String,
     pub package_name: String,
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub operations: BTreeMap<String, OperationConfig>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GeneratedConfig<'a> {
+    #[serde(rename = "$schema")]
+    schema: &'static str,
+    version: u8,
+    package_manager: PackageManagerKind,
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    operations: &'a BTreeMap<String, OperationConfig>,
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    workspaces: &'a BTreeMap<String, WorkspaceConfig>,
+}
+
+impl AgentLowmemConfig {
+    pub fn deterministic_bytes(&self) -> Result<Vec<u8>, Reason> {
+        let generated = GeneratedConfig {
+            schema: SCHEMA_URL,
+            version: CONFIG_VERSION,
+            package_manager: self.package_manager,
+            operations: &self.operations,
+            workspaces: &self.workspaces,
+        };
+        let mut bytes = serde_json::to_vec_pretty(&generated).map_err(|_| Reason::InternalError)?;
+        bytes.push(b'\n');
+        Ok(bytes)
+    }
+
+    pub fn has_operations(&self) -> bool {
+        !self.operations.is_empty()
+            || self
+                .workspaces
+                .values()
+                .any(|workspace| !workspace.operations.is_empty())
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -210,9 +282,25 @@ const fn invalid_config() -> ConfigError {
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_config, select_operation};
+    use super::{CANONICAL_OPERATIONS, parse_config, select_operation};
     use crate::{repository::PackageManagerKind, result::Reason};
     use std::{fs, path::Path};
+
+    #[test]
+    fn serializes_the_exact_canonical_operation_table() {
+        let actual = CANONICAL_OPERATIONS
+            .map(|operation| (operation.key, operation.script, operation.timeout_seconds));
+
+        assert_eq!(
+            actual,
+            [
+                ("test", "test", 900),
+                ("typecheck", "typecheck", 900),
+                ("lint", "lint", 900),
+                ("build", "build", 1_800),
+            ]
+        );
+    }
 
     #[test]
     fn parses_the_minimal_root_configuration() {

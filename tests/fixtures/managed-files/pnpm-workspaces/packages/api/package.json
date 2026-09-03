@@ -1,0 +1,7 @@
+{
+  "name": "@agent-lowmem/api",
+  "private": true,
+  "scripts": {
+    "test": "vitest run"
+  }
+}
