@@ -118,3 +118,55 @@ rg -n '#!\[forbid\(unsafe_code\)\]|Command::new' src/lib.rs src/process.rs
 # src/process.rs:197:    let mut command = Command::new(&launch.executable);
 # source-boundary-audit status=pass command_spawns=1
 ```
+
+## Phase 4 Managed Files Gate — 2026-09-03
+
+| Field | Evidence |
+| --- | --- |
+| Host key | `darwin/arm64`; macOS `26.6.2`; `Mac14,15`; `Apple M2`; `8589934592` physical-memory bytes; `16384` page-size bytes |
+| Rust | `rustc 1.85.0 (4d91de4e4 2025-02-17)`; Cargo `1.85.0 (d73d2caf9 2024-12-31)` |
+| Implementation HEAD under test | `bce52cb` |
+| Tests | `272` active tests passed sequentially; all `5` ignored release-only resource and measurement tests passed separately |
+| Schema gates | Managed-files public report: `6` positive/negative contract tests passed; private restoration manifest: `3` positive/negative contract tests passed |
+| Dependency graph | `56` locked packages and one workspace member; `55` external package SPDX expressions passed the reviewed allowlist; no `Cargo.toml` or `Cargo.lock` Phase 4 delta |
+| Advisory and yanked gate | Official Apple-Silicon `cargo-audit 0.22.2` loaded `1239` RustSec advisories and scanned `56` locked crate dependencies with `--deny warnings`; no finding was emitted |
+| Release binary | `1233472` bytes; limit `12582912` bytes |
+| Managed-run parent peak RSS | `2490368` bytes; limit `25165824` bytes |
+| Doctor peak RSS | `1835008` bytes from `/usr/bin/time -l`; limit `25165824` bytes |
+| Outside-repository doctor | 20 warm-cache runs; median `2.778 ms`; p95 `4.474 ms`; median limit `100 ms` |
+| npm repository doctor | 20 warm-cache runs; median `2.280 ms`; p95 `2.536 ms`; limits `300/500 ms` |
+| `init --dry-run` | 20 warm-cache runs; median `3.352 ms`; p95 `6.869 ms` |
+| `restore --dry-run` | 20 warm-cache runs; median `2.531 ms`; p95 `3.359 ms` |
+| Unchanged `init` | 20 warm-cache runs; median `6.983 ms`; p95 `7.172 ms` |
+| Unchanged `restore` | 20 warm-cache runs; median `6.429 ms`; p95 `7.399 ms` |
+| Managed-files resource cleanup | Sentinel Git, Node, npm, and pnpm executables were not started; every measurement completed with the shared lease available |
+| Source boundary | The executable source guard found no extra process launcher, Git/npm/pnpm config command, shell evaluator, network API, async/network runtime dependency, process enumeration, environment enumeration/persistence, private pressure API, or first-party unsafe block |
+| Acceptance review | All `15` Phase 4 criteria were matched independently to parser, dry-run, configuration, policy-block, transaction, rollback/recovery, restore, privacy, idempotency, sentinel, regression, resource, and scope evidence |
+
+These are development measurements on the reference 8 GiB Mac, not a release, distribution, or cross-host performance claim. The unpublished workspace package intentionally has no license field; the SPDX gate applies to the `55` external packages and passed.
+
+### Phase 4 gate commands
+
+```bash
+cargo fmt --all -- --check
+cargo clippy --all-targets -j 1 -- -D warnings
+cargo test -j 1 -- --test-threads=1
+git diff --check
+cargo test --test managed_files_report -j 1 -- --test-threads=1
+cargo test --test restoration_manifest -j 1 -- --test-threads=1
+cargo metadata --locked --format-version 1
+cargo metadata --locked --format-version 1 | jq -er '["MIT","Unlicense OR MIT","BSD-3-Clause","MIT OR Apache-2.0","Apache-2.0 OR MIT","Apache-2.0/MIT","Apache-2.0","ISC","Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT","MIT/Apache-2.0","Unlicense/MIT","(MIT OR Apache-2.0) AND Unicode-3.0"] as $allowed | [.packages[] | select(.source != null) | . as $package | select(($package.license == null) or (($allowed | index($package.license)) == null)) | {name, version, license}] as $rejected | if ($rejected | length) == 0 then "license-audit external_packages=\([.packages[] | select(.source != null)] | length) status=pass" else error("rejected licenses: \($rejected)") end'
+/tmp/agent-lowmem-audit.QWPLys/cargo-audit-aarch64-apple-darwin-v0.22.2/cargo-audit audit --deny warnings --file Cargo.lock
+cargo build --release -j 1
+cargo test --release --test doctor_budget -j 1 -- --ignored --test-threads=1 --nocapture
+cargo test --release --test run_budget -j 1 -- --ignored --test-threads=1 --nocapture
+cargo test --release --test managed_files_budget -j 1 -- --ignored --test-threads=1 --nocapture
+stat -f '%z bytes' target/release/agent-lowmem
+/usr/bin/time -l target/release/agent-lowmem doctor >/dev/null
+cargo test -j 1 managed_files::transaction_tests -- --test-threads=1
+cargo test --test atomic_managed_files -j 1 -- --test-threads=1
+cargo test --test managed_files_transaction -j 1 -- --test-threads=1
+cargo test --test managed_files_recovery -j 1 -- --test-threads=1
+cargo test --test managed_files_restore -j 1 -- --test-threads=1
+cargo test --test managed_files_cli -j 1 -- --test-threads=1
+```

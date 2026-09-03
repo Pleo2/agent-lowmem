@@ -864,23 +864,23 @@ pub fn render_managed_human(outcome: &ManagedFilesOutcome) -> String;
 pub fn stable_managed_files_line(report: &ManagedFilesReport) -> String;
 ```
 
-- [ ] **Step 1: Add end-to-end command tests** for all accepted CLI forms, exit-code mapping, one stable final stderr line, JSON-only stdout, no ANSI in JSON/stable line, and branding only in human apply output.
+- [x] **Step 1: Add end-to-end command tests** for all accepted CLI forms, exit-code mapping, one stable final stderr line, JSON-only stdout, no ANSI in JSON/stable line, and branding only in human apply output.
 
 Include the supported-but-unvalidated Mac notice for `init`; prove `restore` emits no host-gate failure on the same injected host report.
 
-- [ ] **Step 2: Add exact human diff goldens** showing only `.agent-lowmem.json` and the managed AGENTS span. Assert external configuration bytes, exterior Markdown beyond minimal locating context, private manifest identity/path, raw scripts, and absolute paths never appear.
+- [x] **Step 2: Add exact human diff goldens** showing only `.agent-lowmem.json` and the managed AGENTS span. Assert external configuration bytes, exterior Markdown beyond minimal locating context, private manifest identity/path, raw scripts, and absolute paths never appear.
 
-- [ ] **Step 3: Add dry-run sentinel tests** proving neither command creates a runtime directory, lock, Git-private directory, temp file, managed file, or child-process marker.
+- [x] **Step 3: Add dry-run sentinel tests** proving neither command creates a runtime directory, lock, Git-private directory, temp file, managed file, or child-process marker.
 
-- [ ] **Step 4: Add output-failure precedence tests**: pre-write report failure returns 70; post-write stdout failure preserves the repository outcome and emits one redacted warning; no output failure retries writes.
+- [x] **Step 4: Add output-failure precedence tests**: pre-write report failure returns 70; post-write stdout failure preserves the repository outcome and emits one redacted warning; no output failure retries writes.
 
-- [ ] **Step 5: Confirm RED**
+- [x] **Step 5: Confirm RED**
 
 Run: `cargo test --test managed_files_cli -j 1 -- --test-threads=1`
 
 Run: `cargo test --test managed_files_dry_run -j 1 -- --test-threads=1`
 
-- [ ] **Step 6: Dispatch `Init` and `Restore` in `main`**
+- [x] **Step 6: Dispatch `Init` and `Restore` in `main`**
 
 Compute current directory, avoid `runtime_directory()` for dry-run, catch panics at the command boundary, render the immutable report once, and emit exactly:
 
@@ -888,7 +888,7 @@ Compute current directory, avoid `runtime_directory()` for dry-run, catch panics
 agent-lowmem: managed-files command=<init|restore> outcome=<outcome> code=<code> reason=<reason>
 ```
 
-- [ ] **Step 7: Verify all CLI regressions and commit**
+- [x] **Step 7: Verify all CLI regressions and commit**
 
 Run: `cargo test --test managed_files_cli -j 1 -- --test-threads=1`
 
@@ -920,23 +920,23 @@ pub struct DoctorReport {
 }
 ```
 
-- [ ] **Step 1: Add doctor decision-table tests**
+- [x] **Step 1: Add doctor decision-table tests**
 
 `initAvailable` requires runtime-supported host plus supported repository inspection. `restoreAvailable` requires a Git root plus a managed destination or journal identity, including conflicting state, and never requires the init host gate.
 
-- [ ] **Step 2: Update output contract tests** for phase `managed-files`, retained `managedRunsAvailable`, retained four-state lock, both new booleans, and next action `design the release and distribution phase`.
+- [x] **Step 2: Update output contract tests** for phase `managed-files`, retained `managedRunsAvailable`, retained four-state lock, both new booleans, and next action `design the release and distribution phase`.
 
-- [ ] **Step 3: Add zero-child and zero-write doctor regression** with sentinel executables and absent runtime/private directories.
+- [x] **Step 3: Add zero-child and zero-write doctor regression** with sentinel executables and absent runtime/private directories.
 
-- [ ] **Step 4: Confirm RED**
+- [x] **Step 4: Confirm RED**
 
 Run: `cargo test doctor::tests -j 1 -- --test-threads=1`
 
 Run: `cargo test --test doctor_cli -j 1 -- --test-threads=1`
 
-- [ ] **Step 5: Implement data-only capability assembly** using the managed destination classifier in inspection mode; do not construct a mutating plan or call `runtime_directory()` merely to determine init/restore availability.
+- [x] **Step 5: Implement data-only capability assembly** using the managed destination classifier in inspection mode; do not construct a mutating plan or call `runtime_directory()` merely to determine init/restore availability.
 
-- [ ] **Step 6: Verify and commit**
+- [x] **Step 6: Verify and commit**
 
 Run: `cargo test doctor -j 1 -- --test-threads=1`
 
@@ -959,11 +959,11 @@ git commit -m "feat: report managed file capabilities"
 - Produces: complete sequential evidence for every Phase 4 acceptance criterion and checks off this plan only after observed success.
 - Preserves: all Phase 1–3 tests, schemas, runner output, signal cleanup, lock behavior, dependency set, binary/RSS budgets, and source boundaries.
 
-- [ ] **Step 1: Strengthen source and dependency guards**
+- [x] **Step 1: Strengthen source and dependency guards**
 
 Fail if production sources add `std::process::Command` outside `src/process.rs`, Git/npm/pnpm config invocations, shell evaluators, unsafe blocks, network/async/runtime crates, process enumeration, raw absolute-path serialization, or environment-value persistence.
 
-- [ ] **Step 2: Run formatting, lint, and complete tests sequentially**
+- [x] **Step 2: Run formatting, lint, and complete tests sequentially**
 
 Run: `cargo fmt --all -- --check`
 
@@ -973,13 +973,13 @@ Run: `cargo test -j 1 -- --test-threads=1`
 
 Run: `git diff --check`
 
-- [ ] **Step 3: Validate both JSON Schemas against positive and negative fixtures**
+- [x] **Step 3: Validate both JSON Schemas against positive and negative fixtures**
 
 Run: `cargo test --test managed_files_report -j 1 -- --test-threads=1`
 
 Run: `cargo test --test restoration_manifest -j 1 -- --test-threads=1`
 
-- [ ] **Step 4: Run locked dependency and advisory audits**
+- [x] **Step 4: Run locked dependency and advisory audits**
 
 Run: `cargo metadata --locked --format-version 1`
 
@@ -987,7 +987,7 @@ Run: `cargo audit --deny warnings --file Cargo.lock`
 
 Confirm `git diff -- Cargo.toml Cargo.lock` contains no Phase 4 dependency delta. If unrelated local manifest edits exist, record and exclude them rather than staging them.
 
-- [ ] **Step 5: Build release and run retained resource gates**
+- [x] **Step 5: Build release and run retained resource gates**
 
 Run: `cargo build --release -j 1`
 
@@ -999,30 +999,30 @@ Run: `stat -f '%z bytes' target/release/agent-lowmem`
 
 Expected: stripped binary at most 12 MiB, parent RSS at most 24 MiB, and existing doctor/run timing and wakeup gates remain green.
 
-- [ ] **Step 6: Measure Phase 4 warm-cache behavior**
+- [x] **Step 6: Measure Phase 4 warm-cache behavior**
 
 Run: `cargo test --release --test managed_files_budget -j 1 -- --ignored --test-threads=1 --nocapture`
 
 Record median and p95 for `init --dry-run`, `restore --dry-run`, unchanged `init`, and unchanged `restore` on the reference fixture and host. Assert the test creates no child and leaves the lease available; record values as reference evidence, not cross-host guarantees.
 
-- [ ] **Step 7: Audit privacy, permissions, recovery, and idempotency**
+- [x] **Step 7: Audit privacy, permissions, recovery, and idempotency**
 
 Run focused tests for redaction, `0600`/`0700` under both umasks, Plan A/B drift, every fault boundary, next-command recovery, exterior Markdown preservation, fresh-clone fallback, force limits, repeated init, and repeated restore.
 
-- [ ] **Step 8: Record exact evidence**
+- [x] **Step 8: Record exact evidence**
 
 Append commit under test, Rust version, macOS/hardware reference profile, test totals, schema results, dependency graph status, advisory result, binary bytes, peak RSS, medians/p95s, and every gate command to `docs/dependencies-v1.md`.
 
-- [ ] **Step 9: Independently compare implementation against all 15 acceptance criteria** in the Phase 4 spec. Search the plan and code for unresolved placeholder text and verify every named type/function is consistent with its callers.
+- [x] **Step 9: Independently compare implementation against all 15 acceptance criteria** in the Phase 4 spec. Search the plan and code for unresolved placeholder text and verify every named type/function is consistent with its callers.
 
-- [ ] **Step 10: Mark completed checkboxes only from observed evidence and commit**
+- [x] **Step 10: Mark completed checkboxes only from observed evidence and commit**
 
 ```bash
 git add tests/doctor_cli.rs tests/managed_files_budget.rs docs/dependencies-v1.md docs/superpowers/plans/2026-09-03-agent-lowmem-phase-4-managed-files.md
 git commit -m "docs: record phase 4 managed file evidence"
 ```
 
-- [ ] **Step 11: Final repository proof and publication**
+- [x] **Step 11: Final repository proof and publication**
 
 Run: `git status --short --branch`
 

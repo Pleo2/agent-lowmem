@@ -249,10 +249,23 @@ fn source_guard_confines_launches_and_rejects_unsafe_blocks() {
         let is_managed_process_boundary =
             source_file.strip_prefix(&source_root).unwrap() == Path::new("process.rs");
         for forbidden in [
+            "git config",
             "node --version",
             "npm config",
             "pnpm config",
+            "Command::new(\"sh\")",
+            "Command::new(\"bash\")",
+            "Command::new(\"zsh\")",
+            ".arg(\"-c\")",
+            "std::net",
+            "TcpStream",
+            "UdpSocket",
             "memorystatus_vm_pressure",
+            "proc_listallpids",
+            "proc_listpids",
+            "sysinfo::System",
+            "std::env::vars",
+            ".envs(",
             "unsafe {",
         ] {
             assert!(
@@ -270,6 +283,24 @@ fn source_guard_confines_launches_and_rejects_unsafe_blocks() {
                 );
             }
         }
+    }
+
+    let manifest =
+        fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml")).unwrap();
+    for forbidden_dependency in [
+        "tokio",
+        "async-std",
+        "smol",
+        "reqwest",
+        "ureq",
+        "hyper",
+        "isahc",
+        "surf",
+    ] {
+        assert!(
+            !manifest.contains(forbidden_dependency),
+            "Cargo.toml contains forbidden runtime or network dependency {forbidden_dependency}"
+        );
     }
 }
 
