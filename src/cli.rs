@@ -8,6 +8,8 @@ use std::ffi::OsString;
 pub enum CliCommand {
     Doctor { json: bool },
     Run(RunRequest),
+    Init(InitRequest),
+    Restore(RestoreRequest),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -16,6 +18,19 @@ pub struct RunRequest {
     pub workspace_key: Option<String>,
     pub json_file: Option<String>,
     pub forwarded_arguments: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InitRequest {
+    pub dry_run: bool,
+    pub json: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RestoreRequest {
+    pub dry_run: bool,
+    pub force_managed_block: bool,
+    pub json: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -45,8 +60,52 @@ where
             Ok(CliCommand::Doctor { json: true })
         }
         [command, rest @ ..] if command == "run" => parse_run(rest),
+        [command, rest @ ..] if command == "init" => parse_init(rest),
+        [command, rest @ ..] if command == "restore" => parse_restore(rest),
         _ => Err(invalid_cli()),
     }
+}
+
+fn parse_init(tokens: &[String]) -> Result<CliCommand, CliError> {
+    let flags = parse_managed_file_flags(tokens, false)?;
+    Ok(CliCommand::Init(InitRequest {
+        dry_run: flags.dry_run,
+        json: flags.json,
+    }))
+}
+
+fn parse_restore(tokens: &[String]) -> Result<CliCommand, CliError> {
+    let flags = parse_managed_file_flags(tokens, true)?;
+    Ok(CliCommand::Restore(RestoreRequest {
+        dry_run: flags.dry_run,
+        force_managed_block: flags.force_managed_block,
+        json: flags.json,
+    }))
+}
+
+#[derive(Debug, Default)]
+struct ManagedFileFlags {
+    dry_run: bool,
+    force_managed_block: bool,
+    json: bool,
+}
+
+fn parse_managed_file_flags(
+    tokens: &[String],
+    allow_force_managed_block: bool,
+) -> Result<ManagedFileFlags, CliError> {
+    let mut flags = ManagedFileFlags::default();
+    for token in tokens {
+        match token.as_str() {
+            "--dry-run" if !flags.dry_run => flags.dry_run = true,
+            "--force-managed-block" if allow_force_managed_block && !flags.force_managed_block => {
+                flags.force_managed_block = true;
+            }
+            "--json" if !flags.json => flags.json = true,
+            _ => return Err(invalid_cli()),
+        }
+    }
+    Ok(flags)
 }
 
 fn parse_run(tokens: &[String]) -> Result<CliCommand, CliError> {
@@ -109,7 +168,7 @@ const fn invalid_cli() -> CliError {
 
 #[cfg(test)]
 mod tests {
-    use super::{CliCommand, RunRequest, parse};
+    use super::{CliCommand, InitRequest, RestoreRequest, RunRequest, parse};
     use crate::result::Reason;
 
     #[test]
@@ -181,6 +240,135 @@ mod tests {
     }
 
     #[test]
+    fn parses_every_strict_init_request_ordering() {
+        for (arguments, expected) in [
+            (
+                vec!["init"],
+                InitRequest {
+                    dry_run: false,
+                    json: false,
+                },
+            ),
+            (
+                vec!["init", "--dry-run"],
+                InitRequest {
+                    dry_run: true,
+                    json: false,
+                },
+            ),
+            (
+                vec!["init", "--json"],
+                InitRequest {
+                    dry_run: false,
+                    json: true,
+                },
+            ),
+            (
+                vec!["init", "--dry-run", "--json"],
+                InitRequest {
+                    dry_run: true,
+                    json: true,
+                },
+            ),
+            (
+                vec!["init", "--json", "--dry-run"],
+                InitRequest {
+                    dry_run: true,
+                    json: true,
+                },
+            ),
+        ] {
+            assert_eq!(parse(arguments).unwrap(), CliCommand::Init(expected));
+        }
+    }
+
+    #[test]
+    fn parses_every_strict_restore_request_ordering() {
+        for (arguments, expected) in [
+            (vec![], (false, false, false)),
+            (vec!["--dry-run"], (true, false, false)),
+            (vec!["--force-managed-block"], (false, true, false)),
+            (vec!["--json"], (false, false, true)),
+            (
+                vec!["--dry-run", "--force-managed-block"],
+                (true, true, false),
+            ),
+            (
+                vec!["--force-managed-block", "--dry-run"],
+                (true, true, false),
+            ),
+            (vec!["--dry-run", "--json"], (true, false, true)),
+            (vec!["--json", "--dry-run"], (true, false, true)),
+            (vec!["--force-managed-block", "--json"], (false, true, true)),
+            (vec!["--json", "--force-managed-block"], (false, true, true)),
+            (
+                vec!["--dry-run", "--force-managed-block", "--json"],
+                (true, true, true),
+            ),
+            (
+                vec!["--dry-run", "--json", "--force-managed-block"],
+                (true, true, true),
+            ),
+            (
+                vec!["--force-managed-block", "--dry-run", "--json"],
+                (true, true, true),
+            ),
+            (
+                vec!["--force-managed-block", "--json", "--dry-run"],
+                (true, true, true),
+            ),
+            (
+                vec!["--json", "--dry-run", "--force-managed-block"],
+                (true, true, true),
+            ),
+            (
+                vec!["--json", "--force-managed-block", "--dry-run"],
+                (true, true, true),
+            ),
+        ] {
+            let mut command = vec!["restore"];
+            command.extend(arguments);
+            assert_eq!(
+                parse(command).unwrap(),
+                CliCommand::Restore(RestoreRequest {
+                    dry_run: expected.0,
+                    force_managed_block: expected.1,
+                    json: expected.2,
+                })
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_ambiguous_managed_file_requests() {
+        for arguments in [
+            vec!["init", "--dry-run", "--dry-run"],
+            vec!["init", "--json", "--json"],
+            vec!["init", "--force-managed-block"],
+            vec!["init", "--dry"],
+            vec!["init", "--js"],
+            vec!["init", "--unknown"],
+            vec!["init", "repository"],
+            vec!["init", "--json", "repository"],
+            vec!["restore", "--dry-run", "--dry-run"],
+            vec!["restore", "--force-managed-block", "--force-managed-block"],
+            vec!["restore", "--json", "--json"],
+            vec!["restore", "--force"],
+            vec!["restore", "--dry"],
+            vec!["restore", "--js"],
+            vec!["restore", "--unknown"],
+            vec!["restore", "repository"],
+            vec!["restore", "--json", "repository"],
+            vec!["--json", "init"],
+            vec!["--dry-run", "restore"],
+            vec!["init", "--json\0"],
+            vec!["restore", "--dry-run\0"],
+        ] {
+            assert_eq!(parse(arguments).unwrap_err().reason(), Reason::InvalidCli);
+        }
+    }
+
+    #[test]
     fn rejects_ambiguous_run_requests() {
         for arguments in [
             vec!["run"],
@@ -207,8 +395,21 @@ mod tests {
     fn rejects_non_utf8_command_tokens() {
         use std::{ffi::OsString, os::unix::ffi::OsStringExt};
 
-        let token = OsString::from_vec(vec![0xff]);
+        let command = OsString::from_vec(vec![0xff]);
+        let flag = OsString::from_vec(vec![0xff]);
 
-        assert_eq!(parse([token]).unwrap_err().reason(), Reason::InvalidCli);
+        assert_eq!(parse([command]).unwrap_err().reason(), Reason::InvalidCli);
+        assert_eq!(
+            parse([OsString::from("init"), flag.clone()])
+                .unwrap_err()
+                .reason(),
+            Reason::InvalidCli
+        );
+        assert_eq!(
+            parse([OsString::from("restore"), flag])
+                .unwrap_err()
+                .reason(),
+            Reason::InvalidCli
+        );
     }
 }

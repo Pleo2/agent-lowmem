@@ -122,6 +122,22 @@ fn invalid_arguments_exit_two() {
 }
 
 #[test]
+fn managed_file_commands_remain_unavailable_before_orchestration() {
+    let fixture = Fixture::empty();
+
+    for arguments in [["init", "--dry-run"], ["restore", "--force-managed-block"]] {
+        let output = agent_lowmem(fixture.path(), &arguments);
+
+        assert_eq!(output.status.code(), Some(64));
+        assert!(output.stdout.is_empty());
+        assert_eq!(
+            String::from_utf8(output.stderr).unwrap().lines().last(),
+            Some("agent-lowmem: result origin=preflight code=64 reason=operation-unsupported")
+        );
+    }
+}
+
+#[test]
 fn unconfigured_run_exits_two_without_starting_a_repository_child() {
     let fixture = Fixture::git_repo();
     fixture.write(

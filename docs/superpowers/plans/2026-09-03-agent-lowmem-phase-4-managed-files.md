@@ -66,7 +66,9 @@ CLI output -> doctor -> full Phase 4 gates
 
 **Files:**
 - Modify: `src/cli.rs`
+- Modify: `src/main.rs`
 - Test: `src/cli.rs`
+- Test: `tests/doctor_cli.rs`
 
 **Interfaces:**
 
@@ -90,7 +92,7 @@ pub struct RestoreRequest {
 }
 ```
 
-- [ ] **Step 1: Add table-driven parser tests for every accepted ordering**
+- [x] **Step 1: Add table-driven parser tests for every accepted ordering**
 
 ```rust
 assert_eq!(
@@ -107,24 +109,26 @@ assert_eq!(
 );
 ```
 
-- [ ] **Step 2: Add rejection tables** for duplicate flags, abbreviations, unknown flags, positional arguments, `init --force-managed-block`, NULs, and non-UTF-8 tokens. Every case must return `Reason::InvalidCli`.
+- [x] **Step 2: Add rejection tables** for duplicate flags, abbreviations, unknown flags, positional arguments, `init --force-managed-block`, NULs, and non-UTF-8 tokens. Every case must return `Reason::InvalidCli`.
 
-- [ ] **Step 3: Confirm RED**
+- [x] **Step 3: Confirm RED**
 
 Run: `cargo test cli::tests -j 1 -- --test-threads=1`
 
 Expected: compile failure because the two requests and command variants do not exist.
 
-- [ ] **Step 4: Implement one shared strict flag-set parser** that accepts flags in any allowed order, tracks duplicates explicitly, and never treats a value as positional input.
+- [x] **Step 4: Implement one shared strict flag-set parser** that accepts flags in any allowed order, tracks duplicates explicitly, and never treats a value as positional input. Add exhaustive `main` arms that return preflight code 64 / `operation-unsupported`; Task 12 replaces this temporary unavailable boundary when orchestration exists.
 
-- [ ] **Step 5: Verify and commit**
+- [x] **Step 5: Verify and commit**
 
 Run: `cargo fmt --all -- --check`
 
 Run: `cargo test cli::tests -j 1 -- --test-threads=1`
 
+Run: `cargo test --test doctor_cli managed_file_commands_remain_unavailable_before_orchestration -j 1 -- --test-threads=1`
+
 ```bash
-git add src/cli.rs
+git add src/cli.rs src/main.rs tests/doctor_cli.rs docs/superpowers/plans/2026-09-03-agent-lowmem-phase-4-managed-files.md
 git commit -m "feat: parse managed file commands"
 ```
 
