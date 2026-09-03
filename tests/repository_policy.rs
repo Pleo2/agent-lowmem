@@ -88,7 +88,7 @@ fn reports_npm_and_pnpm_root_and_workspace_operations() {
     ] {
         let fixture = RepositoryFixture::from_source(fixture_name);
         let report = fixture.report();
-        assert_eq!(report["phase"], "repository-policy");
+        assert_eq!(report["phase"], "managed-runner");
         assert_eq!(report["repository"]["packageManager"]["kind"], manager);
         let operations = report["repository"]["operations"].as_array().unwrap();
         assert_eq!(operations.len(), 1);
@@ -131,10 +131,10 @@ fn human_report_uses_only_stable_operation_evidence() {
     assert_eq!(output.status.code(), Some(0));
     let stdout = String::from_utf8(output.stdout).unwrap();
 
-    assert!(stdout.contains("Phase: repository-policy"));
-    assert!(stdout.contains("Managed runs: unavailable in Phase 2"));
+    assert!(stdout.contains("Phase: managed-runner"));
+    assert!(stdout.contains("Managed runs: unavailable"));
     assert!(stdout.contains("root:test [candidate] runnable (compatible)"));
-    assert!(stdout.contains("design the managed runner"));
+    assert!(stdout.contains("design the managed policy-file workflow"));
     assert!(!stdout.contains("vitest run"));
     assert!(!stdout.contains(fixture.root.to_str().unwrap()));
 }

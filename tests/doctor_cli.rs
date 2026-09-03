@@ -85,7 +85,12 @@ fn doctor_json_exits_zero_and_redacts_paths_and_environment_values() {
     let stdout = String::from_utf8(output.stdout).unwrap();
     let report: serde_json::Value = serde_json::from_str(&stdout).unwrap();
     assert_eq!(report["schemaVersion"], 1);
-    assert_eq!(report["phase"], "repository-policy");
+    assert_eq!(report["phase"], "managed-runner");
+    assert!(report["managedRunsAvailable"].is_boolean());
+    assert!(matches!(
+        report["lockStatus"].as_str(),
+        Some("available" | "held" | "orphan-recovery" | "invalid-record")
+    ));
     assert!(!stdout.contains(fixture.path().to_str().unwrap()));
     assert!(!stdout.contains(&secret));
     assert!(output.stderr.is_empty());
@@ -103,7 +108,8 @@ fn human_doctor_reports_capabilities_and_phase_limit() {
     assert!(stdout.contains("Runtime supported:"));
     assert!(stdout.contains("Performance validated:"));
     assert!(stdout.contains("Repository available:"));
-    assert!(stdout.contains("Managed runs: unavailable in Phase 2"));
+    assert!(stdout.contains("Managed runs: unavailable"));
+    assert!(stdout.contains("Operation lock:"));
 }
 
 #[test]
@@ -116,7 +122,7 @@ fn invalid_arguments_exit_two() {
 }
 
 #[test]
-fn unavailable_run_exits_64_without_starting_a_repository_child() {
+fn unconfigured_run_exits_two_without_starting_a_repository_child() {
     let fixture = Fixture::git_repo();
     fixture.write(
         "package.json",
@@ -126,12 +132,12 @@ fn unavailable_run_exits_64_without_starting_a_repository_child() {
 
     let output = agent_lowmem(fixture.path(), &["run", "test"]);
 
-    assert_eq!(output.status.code(), Some(64));
+    assert_eq!(output.status.code(), Some(2));
     assert!(!fixture.path().join("child-started").exists());
     let stderr = String::from_utf8(output.stderr).unwrap();
     assert_eq!(
         stderr.lines().last(),
-        Some("agent-lowmem: result origin=preflight code=64 reason=operation-unsupported")
+        Some("agent-lowmem: result origin=preflight code=2 reason=invalid-config")
     );
 }
 

@@ -111,6 +111,10 @@ impl RunPlan {
         self.forwarded_argument_count
     }
 
+    pub(crate) const fn repository_hash(&self) -> [u8; 32] {
+        self.repository_hash
+    }
+
     pub(crate) fn root(&self) -> &Path {
         self.root.as_path()
     }

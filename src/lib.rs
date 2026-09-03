@@ -13,6 +13,8 @@ pub mod process;
 pub mod repository;
 pub mod result;
 pub mod result_file;
+pub mod run;
 pub mod script;
 pub mod supervisor;
+pub mod terminal;
 pub mod workspace;

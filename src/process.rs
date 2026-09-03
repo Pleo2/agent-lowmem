@@ -22,6 +22,13 @@ pub struct ManagedChild {
     group: OwnedProcessGroup,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SpawnError {
+    pub reason: Reason,
+    pub child_started: bool,
+    pub cleanup_complete: bool,
+}
+
 impl ManagedChild {
     pub fn id(&self) -> u32 {
         self.child.id()
@@ -109,6 +116,11 @@ impl ManagedSignal {
     }
 }
 
+pub fn reraise_signal(signal: ManagedSignal) -> Result<(), Reason> {
+    signal_hook::low_level::emulate_default_handler(signal.number())
+        .map_err(|_| Reason::InternalError)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GroupStatus {
     Live,
@@ -175,8 +187,12 @@ impl GroupController for OwnedProcessGroup {
 pub fn spawn_managed(
     plan: &RunPlan,
     lease: &mut UserLease,
-) -> Result<(ManagedChild, NativeSignalSource), Reason> {
-    let signals = NativeSignalSource::install()?;
+) -> Result<(ManagedChild, NativeSignalSource), SpawnError> {
+    let signals = NativeSignalSource::install().map_err(|reason| SpawnError {
+        reason,
+        child_started: false,
+        cleanup_complete: true,
+    })?;
     let launch = &plan.policy().launch;
     let mut command = Command::new(&launch.executable);
     command
@@ -187,17 +203,28 @@ pub fn spawn_managed(
         .stderr(Stdio::inherit())
         .env("AGENT_LOWMEM_ACTIVE", "1")
         .process_group(0);
-    let mut child = command.spawn().map_err(|_| Reason::InternalError)?;
+    let mut child = command.spawn().map_err(|_| SpawnError {
+        reason: Reason::InternalError,
+        child_started: false,
+        cleanup_complete: true,
+    })?;
     let Some(group_id) = Pid::from_raw(child.id() as i32) else {
-        let _ = child.kill();
-        let _ = child.wait();
-        return Err(Reason::InternalError);
+        let cleanup_complete = cleanup_failed_spawn(None, &mut child);
+        return Err(SpawnError {
+            reason: Reason::InternalError,
+            child_started: true,
+            cleanup_complete,
+        });
     };
     let leader = match ProcessIdentity::for_pid(child.id() as i32) {
         Ok(identity) => identity,
         Err(reason) => {
-            cleanup_failed_spawn(group_id, &mut child);
-            return Err(reason);
+            let cleanup_complete = cleanup_failed_spawn(Some(group_id), &mut child);
+            return Err(SpawnError {
+                reason,
+                child_started: true,
+                cleanup_complete,
+            });
         }
     };
     let group = OwnedProcessGroup {
@@ -205,21 +232,60 @@ pub fn spawn_managed(
         leader_start_identity: leader.start_identity(),
     };
     if !group.is_live() {
-        cleanup_failed_spawn(group_id, &mut child);
-        return Err(Reason::InternalError);
+        let cleanup_complete = cleanup_failed_spawn(Some(group_id), &mut child);
+        return Err(SpawnError {
+            reason: Reason::InternalError,
+            child_started: true,
+            cleanup_complete,
+        });
     }
     if let Err(reason) =
         lease.set_child_group(ChildGroupIdentity::new(group.id(), leader.start_identity()))
     {
-        cleanup_failed_spawn(group_id, &mut child);
-        return Err(reason);
+        let cleanup_complete = cleanup_failed_spawn(Some(group_id), &mut child);
+        return Err(SpawnError {
+            reason,
+            child_started: true,
+            cleanup_complete,
+        });
     }
     Ok((ManagedChild { child, group }, signals))
 }
 
-fn cleanup_failed_spawn(group_id: Pid, child: &mut Child) {
-    let _ = kill_process_group(group_id, Signal::KILL);
-    let _ = child.wait();
+fn cleanup_failed_spawn(group_id: Option<Pid>, child: &mut Child) -> bool {
+    let signal_ok = match group_id {
+        Some(group_id) => match kill_process_group(group_id, Signal::KILL) {
+            Ok(()) => true,
+            Err(error) if error == rustix::io::Errno::SRCH => true,
+            Err(_) => false,
+        },
+        None => child.kill().is_ok(),
+    };
+    if !signal_ok {
+        return false;
+    }
+
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    let mut child_reaped = false;
+    loop {
+        if !child_reaped {
+            match child.try_wait() {
+                Ok(Some(_)) => child_reaped = true,
+                Ok(None) => {}
+                Err(_) => return false,
+            }
+        }
+        let group_absent = group_id.is_none_or(|group_id| {
+            test_kill_process_group(group_id).is_err_and(|error| error == rustix::io::Errno::SRCH)
+        });
+        if child_reaped && group_absent {
+            return true;
+        }
+        if std::time::Instant::now() >= deadline {
+            return false;
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
 }
 
 pub trait SignalSource {

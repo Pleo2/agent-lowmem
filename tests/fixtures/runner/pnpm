@@ -1,10 +1,4 @@
 #!/bin/sh
-set -eu
-
-if [ -n "${AGENT_LOWMEM_FIXTURE_MODE:-}" ]; then
-  exec "$(dirname "$0")/managed-child.sh"
-fi
-
 if [ -n "${AGENT_LOWMEM_SENTINEL_MARKER:-}" ]; then
   /usr/bin/touch "$AGENT_LOWMEM_SENTINEL_MARKER"
 fi

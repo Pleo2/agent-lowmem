@@ -374,25 +374,25 @@ git commit -m "feat: write atomic managed run results"
 - Consumes: `RunRequest`, host gate, `plan_run`, `UserLease`, `plans_match`, process launch, supervisor, result writer, destination TTY capability, `NO_COLOR`, `TERM`, and `COLORTERM`.
 - Produces: enabled `agent-lowmem run`, established `agentlowmem.dev` terminal branding for interactive human output, exactly one unstyled stable final result line, and `doctor` managed-run/lock reporting.
 
-- [ ] **Step 1: Write failing orchestration tests**
+- [x] **Step 1: Write failing orchestration tests**
 
 Cover unsupported host, configured root/workspace operation, disclosures, nested invocation, lock contention, spawn failure, success, child failure, and optional JSON. Assert exactly one final result line. Cover the exact `#c9b6ff` → `#8b83ff` → `#4f6cff` → `#50d8ff` TrueColor gradient, immediate resets, `NO_COLOR`, `TERM=dumb`, missing TrueColor support, and non-TTY parity. Assert the stable result line and structured output never contain ANSI escapes.
 
-- [ ] **Step 2: Add a deterministic post-lock mutation barrier test**
+- [x] **Step 2: Add a deterministic post-lock mutation barrier test**
 
 Compile a `cfg(test)`-only synchronization hook between lease acquisition and planning B. Mutate `package.json`, the lockfile, `.agent-lowmem.json`, workspace evidence, and tool manifest in separate cases; each must return 75 and leave the npm/pnpm sentinel unstarted.
 
-- [ ] **Step 3: Confirm RED and implement orchestration**
+- [x] **Step 3: Confirm RED and implement orchestration**
 
 Run: `cargo test --test run_cli -j 1 -- --test-threads=1`
 
 Implement planning A, lease, planning B, exact comparison, signal setup, spawn, supervision, result write, record clear, unlock, and external-signal re-raise behind a `catch_unwind` cleanup guard.
 
-- [ ] **Step 4: Update `doctor` without weakening zero-child inspection**
+- [x] **Step 4: Update `doctor` without weakening zero-child inspection**
 
 Set phase to `managed-runner`, report managed runs as available only when host/repository/configuration support them, include only the four-state redacted lock status, and update the next safe action to Phase 4 design.
 
-- [ ] **Step 5: Verify and commit**
+- [x] **Step 5: Verify and commit**
 
 Run: `cargo test --test run_cli -j 1 -- --test-threads=1`
 
@@ -403,7 +403,7 @@ Run: `cargo test --test repository_policy -j 1 -- --test-threads=1`
 Run: `cargo test -j 1 -- --test-threads=1`
 
 ```bash
-git add src/run.rs src/terminal.rs src/lib.rs src/main.rs src/doctor.rs tests/run_cli.rs tests/fixtures/runner/npm tests/fixtures/runner/pnpm
+git add docs/dependencies-v1.md docs/superpowers/plans/2026-09-03-agent-lowmem-phase-3-managed-runner.md src/run.rs src/terminal.rs src/lib.rs src/main.rs src/doctor.rs src/process.rs src/repository.rs tests/doctor_cli.rs tests/repository_policy.rs tests/run_cli.rs tests/fixtures/runner/npm tests/fixtures/runner/pnpm
 git commit -m "feat: enable managed repository runs"
 ```
 
