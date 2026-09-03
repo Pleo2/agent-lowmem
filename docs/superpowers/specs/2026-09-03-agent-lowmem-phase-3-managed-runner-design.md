@@ -208,6 +208,23 @@ agent-lowmem: result origin=<origin> code=<code> reason=<reason>
 
 Child streams remain inherited and are never captured, prefixed, parsed, or redacted. Agent Lowmem warnings and disclosures use the `agent-lowmem:` prefix.
 
+#### 4.9.1 CLI visual identity
+
+The terminal UI derives from the established `agentlowmem.dev` branding: compact monospace typography, the lowercase `agent_lowmem` wordmark, restrained spacing, and a dark-neutral presentation whose only decorative accent is the brand gradient. A terminal cannot reproduce CSS geometry, so the approved `120deg` gradient is represented as a left-to-right TrueColor interpolation across visible wordmark or section-label characters using these exact stops:
+
+```text
+0%   #c9b6ff
+38%  #8b83ff
+70%  #4f6cff
+100% #50d8ff
+```
+
+Color is progressive enhancement, never information. It may decorate the interactive wordmark, prompt marker, section labels, and progress accents. Success, warning, and failure retain distinct semantic styling and text labels; the gradient never replaces those meanings. The CLI does not attempt to set or bundle a font because terminal typography belongs to the user's emulator, but its layout assumes the same monospace character model used by the site.
+
+ANSI output is allowed only when the destination stream is an interactive terminal, `NO_COLOR` is absent, `TERM` is not `dumb`, and 24-bit color support is positively identified. Unsupported or ambiguous terminals receive identical plain text. Every styled span resets immediately. Child output is untouched.
+
+The stable `agent-lowmem: result ...` line, `--json`, `--json-file`, redirected output, snapshots, and machine-readable diagnostics never contain ANSI escapes. Disabling color must not change words, ordering, whitespace, exit status, or the number of emitted lines.
+
 `src/result_file.rs` writes `schemas/result-v1.schema.json` records to the explicit `--json-file` destination. The destination must be a lexical repository-relative path beneath the canonical Git root. Its existing parents must be real directories beneath that root. A symlink or special-file destination is rejected. A missing file or existing regular file may be replaced atomically by a same-directory temporary regular file created with mode `0600`; the temporary file and parent directory are synchronized before success is reported.
 
 The result record includes only:
@@ -300,6 +317,8 @@ Injected fake clock, child, signal source, group controller, lease store, eviden
 - second-signal escalation;
 - normal exit, natural signal, timeout, external signal, spawn failure, panic, and cleanup failure mappings;
 - redacted human and JSON output;
+- exact brand-gradient interpolation, immediate ANSI resets, and plain-text parity under `NO_COLOR`, non-TTY, `TERM=dumb`, or missing TrueColor support;
+- proof that the stable result line and every structured output remain byte-free of ANSI escape sequences;
 - exact result-schema validation.
 
 ### 8.2 Filesystem and lock integration tests

@@ -355,6 +355,7 @@ git commit -m "feat: write atomic managed run results"
 
 **Files:**
 - Create: `src/run.rs`
+- Create: `src/terminal.rs`
 - Modify: `src/lib.rs`
 - Modify: `src/main.rs`
 - Modify: `src/doctor.rs`
@@ -364,12 +365,12 @@ git commit -m "feat: write atomic managed run results"
 - Create: `tests/fixtures/runner/pnpm`
 
 **Interfaces:**
-- Consumes: `RunRequest`, host gate, `plan_run`, `UserLease`, `plans_match`, process launch, supervisor, and result writer.
-- Produces: enabled `agent-lowmem run`, exactly one stable final result line, and `doctor` managed-run/lock reporting.
+- Consumes: `RunRequest`, host gate, `plan_run`, `UserLease`, `plans_match`, process launch, supervisor, result writer, destination TTY capability, `NO_COLOR`, `TERM`, and `COLORTERM`.
+- Produces: enabled `agent-lowmem run`, established `agentlowmem.dev` terminal branding for interactive human output, exactly one unstyled stable final result line, and `doctor` managed-run/lock reporting.
 
 - [ ] **Step 1: Write failing orchestration tests**
 
-Cover unsupported host, configured root/workspace operation, disclosures, nested invocation, lock contention, spawn failure, success, child failure, and optional JSON. Assert exactly one final result line.
+Cover unsupported host, configured root/workspace operation, disclosures, nested invocation, lock contention, spawn failure, success, child failure, and optional JSON. Assert exactly one final result line. Cover the exact `#c9b6ff` → `#8b83ff` → `#4f6cff` → `#50d8ff` TrueColor gradient, immediate resets, `NO_COLOR`, `TERM=dumb`, missing TrueColor support, and non-TTY parity. Assert the stable result line and structured output never contain ANSI escapes.
 
 - [ ] **Step 2: Add a deterministic post-lock mutation barrier test**
 
@@ -396,7 +397,7 @@ Run: `cargo test --test repository_policy -j 1 -- --test-threads=1`
 Run: `cargo test -j 1 -- --test-threads=1`
 
 ```bash
-git add src/run.rs src/lib.rs src/main.rs src/doctor.rs tests/run_cli.rs tests/fixtures/runner/npm tests/fixtures/runner/pnpm
+git add src/run.rs src/terminal.rs src/lib.rs src/main.rs src/doctor.rs tests/run_cli.rs tests/fixtures/runner/npm tests/fixtures/runner/pnpm
 git commit -m "feat: enable managed repository runs"
 ```
 
