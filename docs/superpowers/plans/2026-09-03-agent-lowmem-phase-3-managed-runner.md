@@ -418,11 +418,11 @@ git commit -m "feat: enable managed repository runs"
 - Consumes: complete Phase 3 CLI.
 - Produces: reproducible Phase 3 verification evidence and updated resource/dependency record.
 
-- [ ] **Step 1: Add release-only budget tests**
+- [x] **Step 1: Add release-only budget tests**
 
 Measure release supervision RSS, binary size, a 30-minute-equivalent fake-clock wakeup count of at most 1,800, and zero surviving runner resources. Keep wall-clock long tests ignored outside the release gate.
 
-- [ ] **Step 2: Run formatting, lint, and sequential tests**
+- [x] **Step 2: Run formatting, lint, and sequential tests**
 
 Run: `cargo fmt --all -- --check`
 
@@ -430,7 +430,7 @@ Run: `cargo clippy --all-targets -j 1 -- -D warnings`
 
 Run: `cargo test -j 1 -- --test-threads=1`
 
-- [ ] **Step 3: Run release and resource gates**
+- [x] **Step 3: Run release and resource gates**
 
 Run: `cargo build --release -j 1`
 
@@ -442,20 +442,20 @@ Run: `stat -f '%z bytes' target/release/agent-lowmem`
 
 Run: `/usr/bin/time -l target/release/agent-lowmem doctor >/dev/null`
 
-- [ ] **Step 4: Run security and dependency audits**
+- [x] **Step 4: Run security and dependency audits**
 
 Run source searches proving no async runtime, network client, private pressure API, process-table enumeration, shell-string launch, `NODE_OPTIONS` mutation, or first-party unsafe block. Run the available license, yanked-crate, and advisory checks and record exact commands and results.
 
-- [ ] **Step 5: Record measurements and commit**
+- [x] **Step 5: Record measurements and commit**
 
 Append the host key, Rust version, commit under test, test totals, dependency versions/licenses, binary size, RSS, timing, wakeup count, and gate commands to `docs/dependencies-v1.md`.
 
 ```bash
-git add tests/doctor_budget.rs tests/run_budget.rs docs/dependencies-v1.md
+git add tests/run_budget.rs docs/dependencies-v1.md docs/superpowers/plans/2026-09-03-agent-lowmem-phase-3-managed-runner.md
 git commit -m "docs: record phase 3 runner evidence"
 ```
 
-- [ ] **Step 6: Push the atomic Phase 3 history**
+- [x] **Step 6: Push the atomic Phase 3 history**
 
 Run: `git status --short --branch`
 
