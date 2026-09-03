@@ -1,0 +1,79 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentlowmem.dev/schema/v1.json",
+  "title": "Agent Lowmem repository configuration v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "packageManager"],
+  "properties": {
+    "$schema": {
+      "const": "https://agentlowmem.dev/schema/v1.json"
+    },
+    "version": {
+      "const": 1
+    },
+    "packageManager": {
+      "type": "string",
+      "enum": ["npm", "pnpm"]
+    },
+    "operations": {
+      "$ref": "#/$defs/operations"
+    },
+    "workspaces": {
+      "type": "object",
+      "additionalProperties": false,
+      "patternProperties": {
+        "^[a-z][a-z0-9-]{0,31}$": {
+          "$ref": "#/$defs/workspace"
+        }
+      }
+    }
+  },
+  "$defs": {
+    "operations": {
+      "type": "object",
+      "additionalProperties": false,
+      "patternProperties": {
+        "^[a-z][a-z0-9-]{0,31}$": {
+          "$ref": "#/$defs/operation"
+        }
+      }
+    },
+    "operation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["script", "timeoutSeconds"],
+      "properties": {
+        "script": {
+          "type": "string",
+          "minLength": 1
+        },
+        "timeoutSeconds": {
+          "type": "integer",
+          "minimum": 60,
+          "maximum": 3600
+        }
+      }
+    },
+    "workspace": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "packageName"],
+      "properties": {
+        "path": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[^/\\\\]+(?:/[^/\\\\]+)*$"
+        },
+        "packageName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 214
+        },
+        "operations": {
+          "$ref": "#/$defs/operations"
+        }
+      }
+    }
+  }
+}
