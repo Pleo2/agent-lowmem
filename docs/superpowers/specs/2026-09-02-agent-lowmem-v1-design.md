@@ -819,10 +819,11 @@ Version 1 is ready only when:
 25. Unit, integration, end-to-end, dependency-policy, and release checks pass sequentially.
 26. Native and npm-launcher resource budgets pass on the recorded reference fixture and host.
 27. Homebrew, GitHub Release, and the macOS npm platform package contain the same signed native binary; portable npm installation remains non-failing on unsupported platforms.
+28. The project license is explicitly selected, recorded in package metadata, and published with the release artifacts.
 
 ## 16. Distribution and compatibility
 
-Version 1 is an MIT-licensed Rust binary for `aarch64-apple-darwin` with a macOS 13.0 deployment target. Homebrew, GitHub Release, and Cargo installation execute the production CLI without Node.js or Swift. The project-local npm route uses Node.js only for a minimal portable launcher. Runtime compatibility and reference-profile performance validation remain separate claims.
+Version 1 is a Rust binary for `aarch64-apple-darwin` with a macOS 13.0 deployment target. The project license must be selected and recorded before any public release or package publication; no prerelease artifact may claim a project license before that decision. Homebrew, GitHub Release, and Cargo installation execute the production CLI without Node.js or Swift. The project-local npm route uses Node.js only for a minimal portable launcher. Runtime compatibility and reference-profile performance validation remain separate claims.
 
 The primary installation path is:
 
