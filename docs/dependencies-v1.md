@@ -170,3 +170,19 @@ cargo test --test managed_files_recovery -j 1 -- --test-threads=1
 cargo test --test managed_files_restore -j 1 -- --test-threads=1
 cargo test --test managed_files_cli -j 1 -- --test-threads=1
 ```
+
+## GitHub Inspection Gate — 2026-09-03
+
+| Field | Evidence |
+| --- | --- |
+| Integration | `agent-lowmem github inspect [--json]` calls GitHub Actions workflow listing through `gh api` |
+| Authentication boundary | Agent Lowmem delegates authentication to GitHub CLI and neither reads nor prints token material |
+| Network boundary | No Rust HTTP client or async runtime; `Cargo.toml` and `Cargo.lock` are unchanged |
+| Process boundary | One production `Command::new` remains confined to `src/process.rs`; GitHub CLI starts without a shell in its own process group |
+| Resource bounds | One request; first `100` workflows; `262144` captured bytes; `10`-second deadline; stderr discarded |
+| Public contract | `schemas/github-inspect-v1.schema.json`; stable human and JSON representations |
+| Tests | `283` active tests passed sequentially; `5` release-only tests remain ignored in the normal suite |
+| Release binary | `1250064` bytes; limit `12582912` bytes |
+| Live API check | `Pleo2/agent-lowmem`; `0` total, inspected, and active workflows at the time of verification |
+
+This integration is opt-in and has no effect on `doctor`, managed runs, managed files, or normal startup. The observed workflow count is a dated API result, not a permanent repository property.
