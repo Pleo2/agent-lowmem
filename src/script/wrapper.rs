@@ -2,11 +2,13 @@ use crate::{
     configuration::valid_relative_path, result::Reason, script::tokenizer::CommandSegment,
 };
 use semver::Version;
+use serde::Serialize;
 
 const CROSS_ENV_VERSION: &str = "10.1.0";
 const DOTENV_CLI_VERSION: &str = "11.0.0";
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
 pub enum WrapperKind {
     CrossEnv,
     Dotenv,
@@ -27,7 +29,8 @@ impl WrapperIdentity {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct WrapperEvidence {
     pub kind: WrapperKind,
     pub consumed_count: u8,

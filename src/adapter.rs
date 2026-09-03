@@ -4,7 +4,7 @@ use crate::{
     result::Reason,
 };
 use semver::Version;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
@@ -14,7 +14,7 @@ use std::{
 const MATRIX_SCHEMA: &str = "https://agentlowmem.dev/schema/adapter-matrix-v1.json";
 const MATRIX_VERSION: u8 = 1;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Classification {
     Controlled,
@@ -63,6 +63,7 @@ pub struct AdapterRule {
     pub required_prefix: Vec<String>,
     pub required_controls: Vec<String>,
     pub suffix: Vec<String>,
+    pub supports_forwarded_arguments: bool,
     denials: Vec<DenialRule>,
     pub disclosure: Option<String>,
 }
@@ -101,7 +102,8 @@ impl DenialReason {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
 pub enum ControlDecision {
     AlreadyControlled,
     RequiresSuffix(Vec<String>),
@@ -233,6 +235,22 @@ pub fn match_package_manager(
     }
 }
 
+pub fn package_for_executable<'a>(
+    matrix: &'a AdapterMatrix,
+    executable: &str,
+) -> Result<&'a str, Reason> {
+    let mut packages = matrix
+        .adapters
+        .iter()
+        .filter(|rule| rule.executable == executable)
+        .map(|rule| rule.package_name.as_str());
+    let package = packages.next().ok_or(Reason::ToolUnsupported)?;
+    if packages.any(|candidate| candidate != package) {
+        return Err(Reason::ToolUnsupported);
+    }
+    Ok(package)
+}
+
 pub fn resolve_installed_package(
     git_root: &Path,
     selected_package: &Path,
@@ -317,16 +335,20 @@ fn validate_matrix(matrix: &AdapterMatrix) -> Result<(), Reason> {
         }
         let valid_shape = match rule.classification {
             Classification::Controlled => {
-                rule.disclosure.is_none() && rule.required_controls == rule.suffix
+                rule.disclosure.is_none()
+                    && rule.required_controls == rule.suffix
+                    && rule.supports_forwarded_arguments
             }
             Classification::Disclosed => {
                 rule.suffix.is_empty()
                     && rule.required_controls.is_empty()
+                    && rule.supports_forwarded_arguments
                     && rule.disclosure.as_deref().is_some_and(stable_identifier)
             }
             Classification::Auxiliary => {
                 rule.suffix.is_empty()
                     && rule.required_controls.is_empty()
+                    && !rule.supports_forwarded_arguments
                     && rule.disclosure.is_none()
             }
         };

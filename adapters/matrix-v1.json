@@ -38,6 +38,7 @@
       "requiredPrefix": ["run"],
       "requiredControls": ["--no-file-parallelism", "--maxWorkers=1"],
       "suffix": ["--no-file-parallelism", "--maxWorkers=1"],
+      "supportsForwardedArguments": true,
       "denials": [
         {"reason": "watch-denied", "exact": ["--watch", "-w"], "keyValue": ["--watch"]},
         {"reason": "ui-denied", "exact": ["--ui", "--open"], "keyValue": ["--ui"]},
@@ -55,6 +56,7 @@
       "requiredPrefix": [],
       "requiredControls": ["--runInBand"],
       "suffix": ["--runInBand"],
+      "supportsForwardedArguments": true,
       "denials": [
         {"reason": "watch-denied", "exact": ["--watch", "--watchAll"], "keyValue": ["--watch", "--watchAll"]},
         {"reason": "parallel-denied", "exact": ["--maxWorkers", "-w", "--shard"], "keyValue": ["--maxWorkers", "--shard"]}
@@ -70,6 +72,7 @@
       "requiredPrefix": ["--test"],
       "requiredControls": ["--test-concurrency=1"],
       "suffix": ["--test-concurrency=1"],
+      "supportsForwardedArguments": true,
       "denials": [
         {"reason": "watch-denied", "exact": ["--watch"], "keyValue": ["--watch"]},
         {"reason": "parallel-denied", "exact": ["--test-concurrency"], "keyValue": ["--test-concurrency"]}
@@ -85,6 +88,7 @@
       "requiredPrefix": [],
       "requiredControls": [],
       "suffix": [],
+      "supportsForwardedArguments": true,
       "denials": [
         {"reason": "watch-denied", "exact": ["--watch", "-w"], "keyValue": ["--watch"]}
       ],
@@ -99,6 +103,7 @@
       "requiredPrefix": [],
       "requiredControls": ["--concurrency=off"],
       "suffix": ["--concurrency=off"],
+      "supportsForwardedArguments": true,
       "denials": [
         {"reason": "watch-denied", "exact": ["--watch"], "keyValue": ["--watch"]},
         {"reason": "ui-denied", "exact": ["--inspect-config"], "keyValue": []},
@@ -115,6 +120,7 @@
       "requiredPrefix": ["build"],
       "requiredControls": [],
       "suffix": [],
+      "supportsForwardedArguments": true,
       "denials": [
         {"reason": "watch-denied", "exact": ["--watch"], "keyValue": ["--watch"]},
         {"reason": "argument-denied", "exact": ["--experimental-build-mode"], "keyValue": ["--experimental-build-mode"]}
@@ -130,6 +136,7 @@
       "requiredPrefix": ["build"],
       "requiredControls": [],
       "suffix": [],
+      "supportsForwardedArguments": true,
       "denials": [
         {"reason": "watch-denied", "exact": ["--watch"], "keyValue": ["--watch"]}
       ],
@@ -144,6 +151,7 @@
       "requiredPrefix": [],
       "requiredControls": [],
       "suffix": [],
+      "supportsForwardedArguments": false,
       "denials": [],
       "disclosure": null
     },
@@ -156,6 +164,7 @@
       "requiredPrefix": [],
       "requiredControls": [],
       "suffix": [],
+      "supportsForwardedArguments": false,
       "denials": [],
       "disclosure": null
     },
@@ -168,6 +177,7 @@
       "requiredPrefix": [],
       "requiredControls": [],
       "suffix": [],
+      "supportsForwardedArguments": false,
       "denials": [],
       "disclosure": null
     }

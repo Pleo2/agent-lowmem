@@ -2,12 +2,14 @@ use crate::{
     result::Reason,
     script::tokenizer::{CommandSegment, tokenize_script},
 };
+use serde::Serialize;
 use std::collections::BTreeMap;
 
 pub const MAX_REFERENCE_DEPTH: u8 = 3;
 pub const MAX_LEAF_OCCURRENCES: usize = 32;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
 pub enum ScriptPhase {
     Pre,
     Target,
@@ -21,6 +23,7 @@ pub struct LeafOccurrence {
     pub phase: ScriptPhase,
     pub potential_lifecycle: bool,
     pub depth: u8,
+    pub final_top_level: bool,
     pub segment: CommandSegment,
 }
 
@@ -86,7 +89,9 @@ impl Expansion<'_> {
                 }
             }
 
-            for segment in tokenize_script(script.as_bytes())?.segments() {
+            let tokenized = tokenize_script(script.as_bytes())?;
+            let segment_count = tokenized.segments().len();
+            for (segment_index, segment) in tokenized.segments().iter().enumerate() {
                 match classify_reference(segment.arguments())? {
                     Some((kind, referenced_key)) => {
                         if depth >= MAX_REFERENCE_DEPTH
@@ -107,6 +112,10 @@ impl Expansion<'_> {
                         phase,
                         potential_lifecycle,
                         depth,
+                        final_top_level: phase == ScriptPhase::Target
+                            && !potential_lifecycle
+                            && depth == 0
+                            && segment_index + 1 == segment_count,
                         segment: segment.clone(),
                     })?,
                 }

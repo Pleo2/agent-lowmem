@@ -49,7 +49,7 @@
     "adapter": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["packageName", "executable", "version", "kind", "classification", "requiredPrefix", "requiredControls", "suffix", "denials", "disclosure"],
+      "required": ["packageName", "executable", "version", "kind", "classification", "requiredPrefix", "requiredControls", "suffix", "supportsForwardedArguments", "denials", "disclosure"],
       "properties": {
         "packageName": {"type": "string", "minLength": 1},
         "executable": {"type": "string", "minLength": 1},
@@ -59,6 +59,7 @@
         "requiredPrefix": {"$ref": "#/$defs/stringArray"},
         "requiredControls": {"$ref": "#/$defs/stringArray"},
         "suffix": {"$ref": "#/$defs/stringArray"},
+        "supportsForwardedArguments": {"type": "boolean"},
         "denials": {"type": "array", "items": {"$ref": "#/$defs/denial"}},
         "disclosure": {"type": ["string", "null"]}
       }
