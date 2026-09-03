@@ -320,30 +320,31 @@ git commit -m "feat: supervise managed process groups"
 - Modify: `src/result.rs`
 - Modify: `src/lib.rs`
 - Modify: `schemas/result-v1.schema.json`
-- Modify: `Cargo.toml`
-- Modify: `Cargo.lock`
 - Modify: `docs/dependencies-v1.md`
 - Test: `src/result_file.rs`
+- Test: `tests/result_file.rs`
 
 **Interfaces:**
 - Consumes: `RunPlan::redacted`, `SupervisionReport`, lock/recheck/spawn states, and optional repository-relative path.
 - Produces: schema-valid `RunResultRecord` and `write_result_atomic(root, relative, record)`.
 
-- [ ] **Step 1: Review an MSRV-compatible UTC formatter**
+- [x] **Step 1: Review an MSRV-compatible UTC formatter**
 
 Prefer pinned `time 0.3.44` with only `std` and `formatting` if dependency and advisory review passes; otherwise choose a smaller reviewed formatter. Record the exact decision and dependency delta.
 
-- [ ] **Step 2: Write failing schema/redaction/atomicity tests**
+Decision: reject vulnerable `time 0.3.44`; patched `time 0.3.47` exceeds the Rust 1.85 MSRV. Use a bounded `std::time` UTC conversion with no dependency delta.
+
+- [x] **Step 2: Write failing schema/redaction/atomicity tests**
 
 Assert RFC 3339 UTC, mode `0600`, same-directory atomic replacement, parent sync, symlink/special/escape rejection, no temporary residue after failure, schema validation, and absence of sentinel path/argument/environment values.
 
-- [ ] **Step 3: Confirm RED and implement**
+- [x] **Step 3: Confirm RED and implement**
 
 Run: `cargo test result_file::tests -j 1 -- --test-threads=1`
 
 Close `details` in the v1 schema around the exact fields approved by the spec. Validate the destination before lease acquisition and preserve a primary child/signal/timeout result on late write failure.
 
-- [ ] **Step 4: Verify and commit**
+- [x] **Step 4: Verify and commit**
 
 Run: `cargo test result_file -j 1 -- --test-threads=1`
 
@@ -352,7 +353,7 @@ Run: `cargo test result::tests -j 1 -- --test-threads=1`
 Run: `cargo test -j 1 -- --test-threads=1`
 
 ```bash
-git add Cargo.toml Cargo.lock docs/dependencies-v1.md schemas/result-v1.schema.json src/result.rs src/result_file.rs src/lib.rs
+git add docs/dependencies-v1.md schemas/result-v1.schema.json src/configuration.rs src/result.rs src/result_file.rs src/lib.rs src/policy.rs src/repository.rs src/supervisor.rs tests/result_file.rs docs/superpowers/plans/2026-09-03-agent-lowmem-phase-3-managed-runner.md
 git commit -m "feat: write atomic managed run results"
 ```
 

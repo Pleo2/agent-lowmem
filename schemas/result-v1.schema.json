@@ -79,7 +79,89 @@
       "type": "boolean"
     },
     "details": {
-      "type": "object"
+      "type": "object",
+      "required": [
+        "operationKey",
+        "packageManager",
+        "evidence",
+        "graphDepth",
+        "leafCount",
+        "appliedControls",
+        "disclosures",
+        "timeoutSeconds",
+        "warningEmitted",
+        "elapsedMillis",
+        "lockState",
+        "evidenceRecheckState",
+        "spawnState",
+        "cleanupAction",
+        "cleanupComplete",
+        "forwardedArgumentCount"
+      ],
+      "properties": {
+        "operationKey": {
+          "type": "string",
+          "maxLength": 32,
+          "pattern": "^[a-z][a-z0-9-]{0,31}$"
+        },
+        "workspaceKey": {
+          "type": "string",
+          "maxLength": 32,
+          "pattern": "^[a-z][a-z0-9-]{0,31}$"
+        },
+        "packageManager": {
+          "type": "object",
+          "required": ["kind", "version"],
+          "properties": {
+            "kind": { "enum": ["npm", "pnpm"] },
+            "version": { "type": "string", "minLength": 1 }
+          },
+          "additionalProperties": false
+        },
+        "evidence": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["relativePath", "sha256"],
+            "properties": {
+              "relativePath": { "type": "string", "minLength": 1 },
+              "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+            },
+            "additionalProperties": false
+          }
+        },
+        "graphDepth": { "type": "integer", "minimum": 0, "maximum": 3 },
+        "leafCount": { "type": "integer", "minimum": 1, "maximum": 32 },
+        "appliedControls": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "enum": ["already-controlled", "suffix-injected"] }
+        },
+        "disclosures": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "type": "string", "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$" }
+        },
+        "timeoutSeconds": { "type": "integer", "minimum": 60, "maximum": 3600 },
+        "warningEmitted": { "type": "boolean" },
+        "elapsedMillis": { "type": "integer", "minimum": 0 },
+        "lockState": { "enum": ["not-acquired", "acquired"] },
+        "evidenceRecheckState": { "enum": ["not-run", "matched", "changed"] },
+        "spawnState": { "enum": ["not-attempted", "failed", "started"] },
+        "cleanupAction": {
+          "enum": [
+            "none",
+            "terminate",
+            "forward-interrupt",
+            "forward-terminate",
+            "forward-hangup",
+            "kill"
+          ]
+        },
+        "cleanupComplete": { "type": "boolean" },
+        "forwardedArgumentCount": { "type": "integer", "minimum": 0 }
+      },
+      "additionalProperties": false
     }
   },
   "additionalProperties": false,

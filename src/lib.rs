@@ -12,6 +12,7 @@ pub mod policy;
 pub mod process;
 pub mod repository;
 pub mod result;
+pub mod result_file;
 pub mod script;
 pub mod supervisor;
 pub mod workspace;

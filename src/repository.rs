@@ -103,6 +103,14 @@ impl RunPlan {
         &self.evidence
     }
 
+    pub fn package_manager(&self) -> &PackageManagerReport {
+        &self.package_manager
+    }
+
+    pub fn forwarded_argument_count(&self) -> usize {
+        self.forwarded_argument_count
+    }
+
     pub(crate) fn root(&self) -> &Path {
         self.root.as_path()
     }

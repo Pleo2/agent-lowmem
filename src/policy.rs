@@ -22,6 +22,7 @@ pub struct OperationPolicy {
     pub operation_key: String,
     pub script_key: String,
     pub timeout_seconds: u16,
+    pub graph_depth: u8,
     pub leaves: Vec<PolicyLeaf>,
     pub launch: LaunchArray,
     pub disclosures: Vec<String>,
@@ -41,6 +42,7 @@ impl OperationPolicy {
             operation_key: &self.operation_key,
             script_key: &self.script_key,
             timeout_seconds: self.timeout_seconds,
+            graph_depth: self.graph_depth,
             leaves: &self.leaves,
             disclosures: &self.disclosures,
             evidence_files: &self.evidence_files,
@@ -86,6 +88,7 @@ pub struct RedactedPolicySummary<'a> {
     operation_key: &'a str,
     script_key: &'a str,
     timeout_seconds: u16,
+    graph_depth: u8,
     leaves: &'a [PolicyLeaf],
     disclosures: &'a [String],
     evidence_files: &'a [String],
@@ -191,6 +194,13 @@ pub fn build_operation_policy(input: PolicyInput<'_>) -> Result<OperationPolicy,
         operation_key: input.operation_key.to_owned(),
         script_key: input.operation.script.clone(),
         timeout_seconds: input.operation.timeout_seconds,
+        graph_depth: input
+            .graph
+            .leaves
+            .iter()
+            .map(|leaf| leaf.depth)
+            .max()
+            .unwrap_or(0),
         leaves,
         launch,
         disclosures,

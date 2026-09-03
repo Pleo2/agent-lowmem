@@ -70,7 +70,8 @@ pub trait SupervisionOutput {
     fn timeout_warning(&mut self);
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "kebab-case")]
 pub enum CleanupAction {
     None,
     Terminate,

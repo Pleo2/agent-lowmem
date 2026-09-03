@@ -19,6 +19,8 @@
 
 `signal-hook 0.4.4` declares Rust 1.66. Default features are disabled and only the synchronous `iterator` feature is enabled; its production delta is `signal-hook-registry` plus the already-present `libc`. The iterator uses a self-pipe, may coalesce repeated non-realtime signals, and its close handle wakes a blocking listener so the thread can be joined. Agent Lowmem installs only `SIGINT`, `SIGTERM`, and `SIGHUP`; it does not use async adapters, extended signal metadata, or unsafe low-level registration. The dependency-only and Task 5 library-boundary stripped releases both remained `650624` bytes because the runner is not yet reachable from the CLI binary; the final linked delta will be measured after CLI integration at the Phase 3 gate.
 
+Task 7 adds no dependency. The planned `time 0.3.44` formatter was rejected because it is covered by RUSTSEC-2026-0009; the patched `time 0.3.47` requires Rust 1.88 and therefore exceeds the project's Rust 1.85 MSRV. Result timestamps use `std::time::SystemTime` plus a bounded, dependency-free UTC civil-date conversion with fixed epoch, leap-day, and maximum-year tests.
+
 ## Phase 1 Development Baseline — 2026-09-02
 
 | Field | Evidence |

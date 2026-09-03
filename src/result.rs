@@ -128,6 +128,41 @@ impl Reason {
             Self::InternalError => "internal-error",
         }
     }
+
+    pub const fn message(self) -> &'static str {
+        match self {
+            Self::Completed => "managed operation completed",
+            Self::ChildExit => "managed operation exited unsuccessfully",
+            Self::ChildSignal => "managed operation ended from a signal",
+            Self::DeadlineExceeded => "managed operation exceeded its deadline",
+            Self::ExternalSignal => "managed operation was interrupted",
+            Self::InternalError => "the managed runner encountered an internal error",
+            Self::LockHeld => "another managed operation is active",
+            Self::NestedInvocation => "nested managed execution is not allowed",
+            Self::EvidenceChanged => "repository evidence changed before launch",
+            Self::ManagedFileConflict => "the managed file destination is unsafe",
+            Self::InvalidCli => "the run request is invalid",
+            Self::InvalidConfig => "the repository configuration is invalid",
+            _ => "the managed operation is not supported by the current policy",
+        }
+    }
+
+    pub const fn next_action(self) -> &'static str {
+        match self {
+            Self::Completed => "none",
+            Self::ChildExit | Self::ChildSignal => "inspect the inherited child output",
+            Self::DeadlineExceeded => "narrow the operation or use CI for the broad workload",
+            Self::ExternalSignal => "rerun the operation when ready",
+            Self::InternalError => "run agent-lowmem doctor and inspect the result reason",
+            Self::LockHeld => "wait for the active managed operation to finish",
+            Self::NestedInvocation => "invoke agent-lowmem only from the outer agent task",
+            Self::EvidenceChanged => "review repository changes and rerun explicitly",
+            Self::ManagedFileConflict => "choose a safe repository-relative regular-file path",
+            Self::InvalidCli => "correct the command arguments and rerun",
+            Self::InvalidConfig => "correct .agent-lowmem.json and rerun",
+            _ => "run agent-lowmem doctor and choose a supported operation",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]

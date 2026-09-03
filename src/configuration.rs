@@ -4,8 +4,9 @@ use std::collections::{BTreeMap, BTreeSet};
 
 const SCHEMA_URL: &str = "https://agentlowmem.dev/schema/v1.json";
 const CONFIG_VERSION: u8 = 1;
-const MIN_TIMEOUT_SECONDS: u16 = 60;
-const MAX_TIMEOUT_SECONDS: u16 = 3_600;
+pub(crate) const MIN_TIMEOUT_SECONDS: u16 = 60;
+pub(crate) const MAX_TIMEOUT_SECONDS: u16 = 3_600;
+pub(crate) const MAX_KEY_BYTES: usize = 32;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AgentLowmemConfig {
@@ -157,7 +158,7 @@ fn validate_operations(
 pub(crate) fn valid_key(value: &str) -> bool {
     let bytes = value.as_bytes();
     !bytes.is_empty()
-        && bytes.len() <= 32
+        && bytes.len() <= MAX_KEY_BYTES
         && bytes[0].is_ascii_lowercase()
         && bytes[1..]
             .iter()
