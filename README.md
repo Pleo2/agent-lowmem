@@ -8,12 +8,15 @@
 
 Agent Lowmem is a native Rust policy runner for predictable agent-launched validation on memory-constrained Apple Silicon Macs. It serializes heavy work, denies watch and background modes, supervises owned process groups, and keeps adoption reversible.
 
-> Agent Lowmem is in early development. There is no supported public release yet.
+> Agent Lowmem is in early development. There is no supported public release or active Homebrew installation path yet.
+
+The first release targets ARM64 Apple Silicon Macs running macOS 14 or newer. The binary will not be signed or notarized until an Apple Developer ID is available.
 
 ## Current commands
 
 ```sh
 agent-lowmem doctor
+agent-lowmem --version
 agent-lowmem init --dry-run
 agent-lowmem init
 agent-lowmem run test
@@ -55,6 +58,30 @@ cargo build --release -j 1
 ```
 
 The production Rust package is at the repository root. The Swift package under `tools/pressure-probe` is an experimental measurement tool, not the production implementation.
+
+## Release verification
+
+Release archives will be published with `SHA256SUMS`. After downloading both files from the GitHub release, verify the archive before extracting it:
+
+```sh
+shasum -a 256 -c SHA256SUMS
+tar -tzf agent-lowmem-v0.1.0-aarch64-apple-darwin.tar.gz
+```
+
+The archive is expected to contain only `agent-lowmem`, `LICENSE.md`, and `README.md`. Until signing and notarization are available, macOS may quarantine the downloaded binary. Inspect that state explicitly and remove quarantine only from the verified Agent Lowmem binary you downloaded:
+
+```sh
+xattr -l ./agent-lowmem
+xattr -d com.apple.quarantine ./agent-lowmem
+./agent-lowmem --version
+./agent-lowmem doctor
+```
+
+Never disable Gatekeeper globally. See [SECURITY.md](SECURITY.md) before reporting a vulnerability.
+
+## License and contributions
+
+Agent Lowmem uses the [FSL-1.1-MIT license](LICENSE.md), with `Copyright 2026 Jose Leonardo Moreno`. It is source-available during the initial two-year period and each version converts to MIT on its own second anniversary. See [COMMERCIAL.md](COMMERCIAL.md) for plain-language examples and [CONTRIBUTING.md](CONTRIBUTING.md) to contribute.
 
 ## Support
 
