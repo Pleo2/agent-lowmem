@@ -7,6 +7,7 @@ pub mod cli;
 pub mod configuration;
 pub mod doctor;
 pub mod evidence;
+pub mod github;
 pub mod host;
 pub mod lock;
 pub mod managed_files;

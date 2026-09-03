@@ -10,12 +10,146 @@ use signal_hook::{
 };
 use std::{
     fmt, io,
+    io::Read,
     os::unix::process::CommandExt,
+    path::Path,
     process::{Child, Command, ExitStatus, Stdio},
     sync::mpsc::{self, Receiver, RecvTimeoutError},
     thread::{self, JoinHandle},
     time::Duration,
 };
+
+#[cfg(not(test))]
+const CAPTURE_TIMEOUT: Duration = Duration::from_secs(10);
+#[cfg(test)]
+const CAPTURE_TIMEOUT: Duration = Duration::from_millis(25);
+#[cfg(not(test))]
+const CAPTURE_MAX_BYTES: usize = 262_144;
+#[cfg(test)]
+const CAPTURE_MAX_BYTES: usize = 1_024;
+
+#[derive(Debug)]
+pub(crate) struct CapturedCommand {
+    pub status: ExitStatus,
+    pub stdout: Vec<u8>,
+}
+
+#[cfg(test)]
+mod captured_command_tests {
+    use super::run_captured;
+    use crate::result::Reason;
+    use std::{path::Path, time::Instant};
+
+    #[test]
+    fn captured_commands_are_terminated_at_the_deadline() {
+        let started = Instant::now();
+
+        let result = run_captured("/bin/sleep", &["1".to_owned()], Path::new("/"));
+
+        assert_eq!(result.unwrap_err(), Reason::DeadlineExceeded);
+        assert!(started.elapsed().as_millis() < 500);
+    }
+
+    #[test]
+    fn captured_commands_reject_output_over_the_memory_bound() {
+        let result = run_captured(
+            "/usr/bin/printf",
+            &["%2048s".to_owned(), "x".to_owned()],
+            Path::new("/"),
+        );
+
+        assert_eq!(result.unwrap_err(), Reason::InternalError);
+    }
+}
+
+pub(crate) fn run_captured(
+    executable: &str,
+    arguments: &[String],
+    current_dir: &Path,
+) -> Result<CapturedCommand, Reason> {
+    let mut child = new_command(executable)
+        .args(arguments)
+        .current_dir(current_dir)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .process_group(0)
+        .spawn()
+        .map_err(|error| {
+            if error.kind() == io::ErrorKind::NotFound {
+                Reason::ToolUnsupported
+            } else {
+                Reason::InternalError
+            }
+        })?;
+    let stdout = child.stdout.take().ok_or(Reason::InternalError)?;
+    let reader = match thread::Builder::new()
+        .name("agent-lowmem-captured-output".to_owned())
+        .spawn(move || read_captured(stdout))
+    {
+        Ok(reader) => reader,
+        Err(_) => {
+            terminate_captured_child(&mut child);
+            return Err(Reason::InternalError);
+        }
+    };
+    let deadline = std::time::Instant::now() + CAPTURE_TIMEOUT;
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) if std::time::Instant::now() < deadline => {
+                thread::sleep(Duration::from_millis(10));
+            }
+            Ok(None) => {
+                terminate_captured_child(&mut child);
+                let _ = reader.join();
+                return Err(Reason::DeadlineExceeded);
+            }
+            Err(_) => {
+                terminate_captured_child(&mut child);
+                let _ = reader.join();
+                return Err(Reason::InternalError);
+            }
+        }
+    };
+    let (stdout, exceeded) = reader.join().map_err(|_| Reason::InternalError)??;
+    if exceeded {
+        return Err(Reason::InternalError);
+    }
+    Ok(CapturedCommand { status, stdout })
+}
+
+fn terminate_captured_child(child: &mut Child) {
+    let group_killed = Pid::from_raw(child.id() as i32)
+        .is_some_and(|group| kill_process_group(group, Signal::KILL).is_ok());
+    if !group_killed {
+        let _ = child.kill();
+    }
+    let _ = child.wait();
+}
+
+fn new_command(executable: &str) -> Command {
+    Command::new(executable)
+}
+
+fn read_captured(mut stdout: impl Read) -> Result<(Vec<u8>, bool), Reason> {
+    let mut captured = Vec::with_capacity(CAPTURE_MAX_BYTES.min(8_192));
+    let mut buffer = [0_u8; 8_192];
+    let mut exceeded = false;
+    loop {
+        let read = stdout
+            .read(&mut buffer)
+            .map_err(|_| Reason::InternalError)?;
+        if read == 0 {
+            break;
+        }
+        let available = CAPTURE_MAX_BYTES.saturating_sub(captured.len());
+        let retained = read.min(available);
+        captured.extend_from_slice(&buffer[..retained]);
+        exceeded |= retained < read;
+    }
+    Ok((captured, exceeded))
+}
 
 pub struct ManagedChild {
     child: Child,
@@ -194,7 +328,7 @@ pub fn spawn_managed(
         cleanup_complete: true,
     })?;
     let launch = &plan.policy().launch;
-    let mut command = Command::new(&launch.executable);
+    let mut command = new_command(&launch.executable);
     command
         .args(&launch.arguments)
         .current_dir(plan.root())

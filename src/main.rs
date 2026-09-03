@@ -3,6 +3,7 @@
 use agent_lowmem::{
     cli::{CliCommand, InitRequest, RestoreRequest, parse},
     doctor::{inspect_doctor, render_human},
+    github::{inspect as inspect_github, render_human as render_github_human},
     host::{HostReport, NativeHostSource, inspect_host},
     managed_files::{
         ManagedCommand, ManagedFilesOutcome, ManagedFilesReport, ManagedOutcome, ManagedResult,
@@ -48,10 +49,40 @@ fn run() -> i32 {
 
     match command {
         CliCommand::Doctor { json } => run_doctor(json),
+        CliCommand::GithubInspect { json } => run_github_inspect(json),
         CliCommand::Run(request) => run_managed(request),
         CliCommand::Init(request) => run_init(request),
         CliCommand::Restore(request) => run_restore(request),
     }
+}
+
+fn run_github_inspect(json: bool) -> i32 {
+    let current_dir = match std::env::current_dir() {
+        Ok(current_dir) => current_dir,
+        Err(_) => return emit_result(internal_result()),
+    };
+    let report = match inspect_github(&current_dir) {
+        Ok(report) => report,
+        Err(result) => return emit_result(result),
+    };
+    let output = if json {
+        match serde_json::to_string(&report) {
+            Ok(output) => output,
+            Err(_) => return emit_result(internal_result()),
+        }
+    } else {
+        let stdout = io::stdout();
+        let terminal = TerminalCapabilities::from_environment(stdout.is_terminal());
+        format!(
+            "{}\n{}",
+            render_wordmark(&terminal),
+            render_github_human(&report)
+        )
+    };
+    if write_stdout(&output).is_err() {
+        return emit_result(internal_result());
+    }
+    emit_result(report.result)
 }
 
 fn run_init(request: InitRequest) -> i32 {

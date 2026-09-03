@@ -7,6 +7,7 @@ use std::ffi::OsString;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CliCommand {
     Doctor { json: bool },
+    GithubInspect { json: bool },
     Run(RunRequest),
     Init(InitRequest),
     Restore(RestoreRequest),
@@ -58,6 +59,12 @@ where
         [command] if command == "doctor" => Ok(CliCommand::Doctor { json: false }),
         [command, flag] if command == "doctor" && flag == "--json" => {
             Ok(CliCommand::Doctor { json: true })
+        }
+        [group, command] if group == "github" && command == "inspect" => {
+            Ok(CliCommand::GithubInspect { json: false })
+        }
+        [group, command, flag] if group == "github" && command == "inspect" && flag == "--json" => {
+            Ok(CliCommand::GithubInspect { json: true })
         }
         [command, rest @ ..] if command == "run" => parse_run(rest),
         [command, rest @ ..] if command == "init" => parse_init(rest),

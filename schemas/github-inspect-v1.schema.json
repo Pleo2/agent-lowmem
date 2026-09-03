@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentlowmem.dev/schema/github-inspect-v1.json",
+  "title": "Agent Lowmem GitHub inspection report v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "repository",
+    "workflowCount",
+    "inspectedWorkflowCount",
+    "activeWorkflowCount",
+    "recommendations",
+    "result"
+  ],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "repository": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$"
+    },
+    "workflowCount": { "type": "integer", "minimum": 0 },
+    "inspectedWorkflowCount": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 100
+    },
+    "activeWorkflowCount": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 100
+    },
+    "recommendations": {
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 2,
+      "uniqueItems": true,
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "result": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["origin", "code", "reason"],
+      "properties": {
+        "origin": { "const": "child" },
+        "code": { "const": 0 },
+        "reason": { "const": "completed" }
+      }
+    }
+  }
+}
