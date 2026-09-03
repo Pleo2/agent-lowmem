@@ -19,7 +19,8 @@ use crate::{
     restoration::{
         AgentsRestoration, ConfigurationRestoration, DestinationAction, JournalState,
         MAX_CONFIGURATION_BYTES, MAX_MANIFEST_BYTES, ManagedSpan, OwnedBytes, Ownership,
-        PriorManagedState, RestorationManifest, parse_manifest, serialize_manifest,
+        PriorManagedState, RecoveryClassification, RecoveryPlan, RestorationManifest,
+        classify_prepared, parse_manifest, recover_prepared, serialize_manifest,
     },
     result::Reason,
     workspace::{expand_workspace_patterns, parse_npm_workspaces, parse_pnpm_workspace},
@@ -109,6 +110,13 @@ impl TransactionFaults for NoTransactionFaults {
     fn fail_at(&self, _point: FaultPoint) -> bool {
         false
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PreparedRecovery {
+    root: GitRepository,
+    repository_hash: [u8; 32],
+    plan: RecoveryPlan,
 }
 
 impl fmt::Debug for ManagedFilesPlan {
@@ -492,6 +500,13 @@ pub fn plan_init(
             ManifestState::Absent,
         ));
     }
+    plan_init_supported(start, request)
+}
+
+fn plan_init_supported(
+    start: &Path,
+    request: &InitRequest,
+) -> Result<ManagedFilesPlan, ManagedFilesFailure> {
     plan_init_inner(start, *request)
         .map_err(|reason| planning_failure(*request, reason, inspect_manifest_state(start)))
 }
@@ -513,7 +528,95 @@ fn execute_init_core(
     post_lock_hook: impl FnOnce(),
     faults: &impl TransactionFaults,
 ) -> ManagedFilesOutcome {
-    let plan_before = match plan_init(source, start, request) {
+    if !inspect_host(source).runtime_supported {
+        return ManagedFilesOutcome {
+            report: planning_failure(*request, Reason::HostUnsupported, ManifestState::Absent)
+                .report,
+        };
+    }
+    match inspect_prepared_recovery(start) {
+        Ok(Some(_recovery)) if request.dry_run => {
+            return recovery_required_outcome(*request);
+        }
+        Ok(Some(recovery_before)) => {
+            let acquired_at = match unix_seconds_now() {
+                Ok(value) => value,
+                Err(reason) => {
+                    return recovery_failure_outcome(*request, reason, ManifestState::Prepared);
+                }
+            };
+            let record = match ProcessIdentity::current().and_then(|owner| {
+                LeaseRecord::new(owner, recovery_before.repository_hash, "init", acquired_at)
+            }) {
+                Ok(record) => record,
+                Err(reason) => {
+                    return recovery_failure_outcome(*request, reason, ManifestState::Prepared);
+                }
+            };
+            let _lease = match UserLease::acquire(runtime, record) {
+                Ok(lease) => lease,
+                Err(reason) => {
+                    return recovery_failure_outcome(*request, reason, ManifestState::Prepared);
+                }
+            };
+            post_lock_hook();
+            let recovery_after = match inspect_prepared_recovery(recovery_before.root.root()) {
+                Ok(Some(recovery)) if recovery == recovery_before => recovery,
+                Ok(_) | Err(_) => {
+                    return recovery_failure_outcome(
+                        *request,
+                        Reason::EvidenceChanged,
+                        ManifestState::Prepared,
+                    );
+                }
+            };
+            let repository = match HeldDirectory::open(recovery_after.root.root(), None) {
+                Ok(directory) => directory,
+                Err(reason) => {
+                    return recovery_failure_outcome(*request, reason, ManifestState::Prepared);
+                }
+            };
+            let metadata = match HeldDirectory::open(recovery_after.root.metadata(), None) {
+                Ok(directory) => directory,
+                Err(reason) => {
+                    return recovery_failure_outcome(*request, reason, ManifestState::Prepared);
+                }
+            };
+            if let Err(reason) = recover_prepared(&repository, &metadata, &recovery_after.plan) {
+                return recovery_failure_outcome(*request, reason, ManifestState::Prepared);
+            }
+            let recovered_plan_before =
+                match plan_init_supported(recovery_after.root.root(), request) {
+                    Ok(plan) => plan,
+                    Err(failure) => {
+                        return ManagedFilesOutcome {
+                            report: failure.report,
+                        };
+                    }
+                };
+            let recovered_plan =
+                match plan_init_supported(recovered_plan_before.root.root(), request) {
+                    Ok(plan) if managed_plans_match(&recovered_plan_before, &plan) => plan,
+                    Ok(_) | Err(_) => {
+                        return managed_failure_outcome(
+                            &recovered_plan_before,
+                            Reason::EvidenceChanged,
+                        );
+                    }
+                };
+            return apply_init_transaction(&recovered_plan, faults)
+                .map(|()| ManagedFilesOutcome {
+                    report: recovered_plan.report.clone(),
+                })
+                .unwrap_or_else(|reason| managed_failure_outcome(&recovered_plan, reason));
+        }
+        Ok(None) => {}
+        Err(reason) => {
+            return recovery_failure_outcome(*request, reason, inspect_manifest_state(start));
+        }
+    }
+
+    let plan_before = match plan_init_supported(start, request) {
         Ok(plan) => plan,
         Err(failure) => {
             return ManagedFilesOutcome {
@@ -543,7 +646,7 @@ fn execute_init_core(
     };
 
     post_lock_hook();
-    let plan_after = match plan_init(source, plan_before.root.root(), request) {
+    let plan_after = match plan_init_supported(plan_before.root.root(), request) {
         Ok(plan) if managed_plans_match(&plan_before, &plan) => plan,
         Ok(_) | Err(_) => return managed_failure_outcome(&plan_before, Reason::EvidenceChanged),
     };
@@ -556,6 +659,42 @@ fn execute_init_core(
             report: plan_after.report.clone(),
         },
         Err(reason) => managed_failure_outcome(&plan_after, reason),
+    }
+}
+
+fn inspect_prepared_recovery(start: &Path) -> Result<Option<PreparedRecovery>, Reason> {
+    let Some(root) = find_git_repository(start).map_err(|_| Reason::RepositoryUnsupported)? else {
+        return Ok(None);
+    };
+    let metadata_file = File::open(root.metadata()).map_err(|_| Reason::RepositoryUnsupported)?;
+    let discovered = read_optional_bounded(&metadata_file, JOURNAL_PATH, MAX_MANIFEST_BYTES)?;
+    if optional_bytes(&discovered).is_none() {
+        return Ok(None);
+    }
+
+    let metadata = HeldDirectory::open(root.metadata(), None)?;
+    let private = HeldDirectory::open_child(&metadata, "agent-lowmem", Some(0o700))?;
+    let journal = private.read_optional("restoration-v1.json", MAX_MANIFEST_BYTES)?;
+    if !valid_private_journal(&journal) {
+        return Err(Reason::ManagedFileConflict);
+    }
+    let manifest = parse_manifest(optional_bytes(&journal).ok_or(Reason::ManagedFileConflict)?)?;
+    if manifest.state != JournalState::Prepared {
+        return Ok(None);
+    }
+    let expected_hash = repository_hash(root.root());
+    if manifest.repository_sha256 != hex_digest(&expected_hash) {
+        return Err(Reason::ManagedFileConflict);
+    }
+    let repository = HeldDirectory::open(root.root(), None)?;
+    match classify_prepared(&repository, &manifest)? {
+        RecoveryClassification::Recoverable(plan) => Ok(Some(PreparedRecovery {
+            root,
+            repository_hash: expected_hash,
+            plan,
+        })),
+        RecoveryClassification::Conflict => Err(Reason::ManagedFileConflict),
+        RecoveryClassification::NotRequired => Ok(None),
     }
 }
 
@@ -1524,6 +1663,49 @@ fn planning_failure(
     ManagedFilesFailure { reason, report }
 }
 
+fn recovery_required_outcome(request: InitRequest) -> ManagedFilesOutcome {
+    let failure = planning_failure(
+        request,
+        Reason::ManagedFileConflict,
+        ManifestState::Prepared,
+    );
+    ManagedFilesOutcome {
+        report: failure.report,
+    }
+}
+
+fn recovery_failure_outcome(
+    request: InitRequest,
+    reason: Reason,
+    manifest_state: ManifestState,
+) -> ManagedFilesOutcome {
+    let code = if reason == Reason::ManagedFileConflict {
+        78
+    } else {
+        failure_code(reason)
+    };
+    let report = ManagedFilesReport::new(
+        ManagedCommand::Init,
+        request.dry_run,
+        if reason == Reason::ManagedFileConflict {
+            ManagedOutcome::Conflict
+        } else {
+            ManagedOutcome::Failed
+        },
+        ManagedResult::new(code, reason).unwrap_or(ManagedResult {
+            code: 70,
+            reason: Reason::InternalError,
+        }),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        manifest_state,
+    )
+    .expect("recovery failure reports are internally valid");
+    ManagedFilesOutcome { report }
+}
+
 fn inspect_manifest_state(start: &Path) -> ManifestState {
     let Ok(Some(repository)) = find_git_repository(start) else {
         return ManifestState::Absent;
@@ -1652,6 +1834,7 @@ mod transaction_tests {
     use std::{
         collections::BTreeMap,
         fs,
+        panic::{AssertUnwindSafe, catch_unwind},
         path::PathBuf,
         sync::atomic::{AtomicU64, Ordering},
         time::{SystemTime, UNIX_EPOCH},
@@ -1664,6 +1847,15 @@ mod transaction_tests {
     impl TransactionFaults for OneFault {
         fn fail_at(&self, point: FaultPoint) -> bool {
             self.0 == point
+        }
+    }
+
+    struct CrashAt(FaultPoint);
+
+    impl TransactionFaults for CrashAt {
+        fn fail_at(&self, point: FaultPoint) -> bool {
+            assert_ne!(self.0, point, "simulated process crash at {point:?}");
+            false
         }
     }
 
@@ -1751,6 +1943,105 @@ mod transaction_tests {
             let journal: serde_json::Value = serde_json::from_slice(&before.2).unwrap();
             assert_eq!(journal["state"], "applied");
         }
+    }
+
+    #[test]
+    fn the_next_init_recovers_after_every_crash_boundary() {
+        for point in [
+            FaultPoint::PreparedDurable,
+            FaultPoint::ConfigurationWritten,
+            FaultPoint::AgentsWritten,
+            FaultPoint::TargetsVerified,
+            FaultPoint::AppliedJournalDurable,
+        ] {
+            let fixture = Fixture::new();
+            let request = InitRequest {
+                dry_run: false,
+                json: true,
+            };
+            let crashed = catch_unwind(AssertUnwindSafe(|| {
+                execute_init_core(
+                    &SupportedHost::reference(),
+                    &fixture.root,
+                    &fixture.runtime,
+                    &request,
+                    || {},
+                    &CrashAt(point),
+                )
+            }));
+            assert!(crashed.is_err(), "fault: {point:?}");
+
+            let recovered = execute_init_core(
+                &SupportedHost::reference(),
+                &fixture.root,
+                &fixture.runtime,
+                &request,
+                || {},
+                &OneFault(FaultPoint::Never),
+            );
+
+            assert_eq!(recovered.report.result.code, 0, "fault: {point:?}");
+            assert_eq!(
+                recovered.report.result.reason,
+                Reason::Completed,
+                "fault: {point:?}"
+            );
+            assert!(fixture.root.join(".agent-lowmem.json").is_file());
+            assert!(fixture.root.join("AGENTS.md").is_file());
+            let journal: serde_json::Value = serde_json::from_slice(
+                &fs::read(fixture.root.join(".git/agent-lowmem/restoration-v1.json")).unwrap(),
+            )
+            .unwrap();
+            assert_eq!(journal["state"], "applied", "fault: {point:?}");
+        }
+    }
+
+    #[test]
+    fn recovery_plan_b_drift_returns_75_without_overwriting_the_change() {
+        let fixture = Fixture::new();
+        let request = InitRequest {
+            dry_run: false,
+            json: true,
+        };
+        let crashed = catch_unwind(AssertUnwindSafe(|| {
+            execute_init_core(
+                &SupportedHost::reference(),
+                &fixture.root,
+                &fixture.runtime,
+                &request,
+                || {},
+                &CrashAt(FaultPoint::PreparedDurable),
+            )
+        }));
+        assert!(crashed.is_err());
+        let root = fixture.root.clone();
+
+        let outcome = execute_init_core(
+            &SupportedHost::reference(),
+            &fixture.root,
+            &fixture.runtime,
+            &request,
+            || {
+                fs::write(
+                    root.join(".agent-lowmem.json"),
+                    "{\"version\":1,\"packageManager\":\"npm\",\"operations\":{}}\n",
+                )
+                .unwrap();
+            },
+            &OneFault(FaultPoint::Never),
+        );
+
+        assert_eq!(outcome.report.result.code, 75);
+        assert_eq!(outcome.report.result.reason, Reason::EvidenceChanged);
+        assert_eq!(
+            fs::read_to_string(fixture.root.join(".agent-lowmem.json")).unwrap(),
+            "{\"version\":1,\"packageManager\":\"npm\",\"operations\":{}}\n"
+        );
+        let journal: serde_json::Value = serde_json::from_slice(
+            &fs::read(fixture.root.join(".git/agent-lowmem/restoration-v1.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(journal["state"], "prepared");
     }
 
     #[test]

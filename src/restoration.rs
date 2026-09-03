@@ -1,7 +1,11 @@
 // The planner and transaction engine consume these primitives beginning in Task 8.
 #![allow(dead_code)]
 
-use crate::result::Reason;
+use crate::{
+    agents_policy::{AgentsDocumentState, MAX_AGENTS_BYTES, inspect_agents},
+    atomic_file::{FilePrecondition, HeldDirectory, OptionalFile},
+    result::Reason,
+};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{fmt, str};
@@ -130,6 +134,41 @@ pub(crate) struct RestorationManifest {
     pub(crate) previous_applied: Option<Box<RestorationManifest>>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RecoverySide {
+    Before,
+    Target,
+}
+
+#[derive(Clone, PartialEq, Eq)]
+pub(crate) struct RecoveryPlan {
+    manifest: RestorationManifest,
+    configuration: OptionalFile,
+    configuration_side: RecoverySide,
+    agents: OptionalFile,
+    agents_side: RecoverySide,
+    agents_span: Option<std::ops::Range<usize>>,
+}
+
+impl fmt::Debug for RecoveryPlan {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("RecoveryPlan")
+            .field("manifest", &self.manifest)
+            .field("configuration_side", &self.configuration_side)
+            .field("agents_side", &self.agents_side)
+            .field("agents_span", &self.agents_span)
+            .finish_non_exhaustive()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum RecoveryClassification {
+    NotRequired,
+    Recoverable(RecoveryPlan),
+    Conflict,
+}
+
 impl fmt::Debug for RestorationManifest {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
@@ -239,6 +278,266 @@ pub(crate) fn transaction_digest(manifest: &RestorationManifest) -> Result<[u8; 
     .map_err(|_| Reason::InternalError)?;
     let bytes = serde_json::to_vec(&value).map_err(|_| Reason::InternalError)?;
     Ok(Sha256::digest(bytes).into())
+}
+
+pub(crate) fn classify_prepared(
+    repository: &HeldDirectory,
+    manifest: &RestorationManifest,
+) -> Result<RecoveryClassification, Reason> {
+    if manifest.state != JournalState::Prepared {
+        return Ok(RecoveryClassification::NotRequired);
+    }
+    let configuration = repository.read_optional(".agent-lowmem.json", MAX_CONFIGURATION_BYTES)?;
+    let Some(configuration_side) = classify_configuration(&configuration, &manifest.configuration)
+    else {
+        return Ok(RecoveryClassification::Conflict);
+    };
+    let agents = repository.read_optional("AGENTS.md", MAX_AGENTS_BYTES)?;
+    let Some((agents_side, agents_span)) = classify_agents(&agents, &manifest.agents_policy) else {
+        return Ok(RecoveryClassification::Conflict);
+    };
+    Ok(RecoveryClassification::Recoverable(RecoveryPlan {
+        manifest: manifest.clone(),
+        configuration,
+        configuration_side,
+        agents,
+        agents_side,
+        agents_span,
+    }))
+}
+
+pub(crate) fn recover_prepared(
+    repository: &HeldDirectory,
+    metadata: &HeldDirectory,
+    plan: &RecoveryPlan,
+) -> Result<(), Reason> {
+    let private = HeldDirectory::open_child(metadata, "agent-lowmem", Some(0o700))?;
+    let journal = private.read_optional("restoration-v1.json", MAX_MANIFEST_BYTES)?;
+    let prepared_bytes = serialize_manifest(&plan.manifest)?;
+    if !matches!(
+        &journal,
+        OptionalFile::Regular {
+            bytes,
+            mode: 0o600,
+            owner_uid,
+            ..
+        } if bytes == &prepared_bytes && *owner_uid == rustix::process::geteuid().as_raw()
+    ) {
+        return Err(Reason::ManagedFileConflict);
+    }
+
+    if plan.agents_side == RecoverySide::Target {
+        recover_agents(repository, plan)?;
+    }
+    if plan.configuration_side == RecoverySide::Target {
+        recover_configuration(repository, plan)?;
+    }
+
+    let current = private.read_optional("restoration-v1.json", MAX_MANIFEST_BYTES)?;
+    if optional_bytes(&current) != Some(prepared_bytes.as_slice()) {
+        return Err(Reason::ManagedFileConflict);
+    }
+    match plan.manifest.previous_applied.as_deref() {
+        Some(previous) => private.replace_atomic(
+            "restoration-v1.json",
+            &FilePrecondition::from(&current),
+            &serialize_manifest(previous)?,
+            0o600,
+        )?,
+        None => private.remove_exact("restoration-v1.json", &FilePrecondition::from(&current))?,
+    }
+    Ok(())
+}
+
+fn classify_configuration(
+    current: &OptionalFile,
+    configuration: &ConfigurationRestoration,
+) -> Option<RecoverySide> {
+    if configuration.ownership == Ownership::External {
+        return matches!(
+            current,
+            OptionalFile::Regular {
+                sha256,
+                mode,
+                ..
+            } if Some(*mode as u16) == configuration.before_mode
+                && configuration.external_sha256.as_deref() == Some(hex_digest(sha256).as_str())
+        )
+        .then_some(RecoverySide::Before);
+    }
+    let immediate = configuration.immediate_before.as_ref()?;
+    if optional_matches_prior(current, immediate, configuration.before_mode) {
+        return Some(RecoverySide::Before);
+    }
+    optional_matches_target(
+        current,
+        configuration.target.as_ref(),
+        configuration.target_mode,
+    )
+    .then_some(RecoverySide::Target)
+}
+
+fn classify_agents(
+    current: &OptionalFile,
+    agents: &AgentsRestoration,
+) -> Option<(RecoverySide, Option<std::ops::Range<usize>>)> {
+    if agents_before_matches(current, agents) {
+        return Some((RecoverySide::Before, None));
+    }
+    let OptionalFile::Regular { bytes, mode, .. } = current else {
+        return None;
+    };
+    if Some(*mode as u16) != agents.target_mode {
+        return None;
+    }
+    let AgentsDocumentState::OneBlock(block) = inspect_agents(Some(bytes.clone())).ok()? else {
+        return None;
+    };
+    let target = agents.target.as_ref()?;
+    let separator_length = if matches!(agents.immediate_before, PriorManagedState::Absent) {
+        agents.inserted_separator.len()
+    } else {
+        0
+    };
+    let owned_start = block.span.start.checked_sub(separator_length)?;
+    let owned_span = owned_start..block.span.end;
+    if bytes.get(owned_span.clone()) != Some(target.bytes.as_slice())
+        || owned_span.start != agents.managed_span.start as usize
+        || owned_span.end != agents.managed_span.end as usize
+        || digest(&bytes[..owned_span.start]) != agents.prefix_sha256
+        || digest(&bytes[owned_span.end..]) != agents.suffix_sha256
+    {
+        return None;
+    }
+    Some((RecoverySide::Target, Some(owned_span)))
+}
+
+fn agents_before_matches(current: &OptionalFile, agents: &AgentsRestoration) -> bool {
+    match (&agents.immediate_before, current) {
+        (PriorManagedState::Absent, OptionalFile::Absent) => agents.before_mode.is_none(),
+        (PriorManagedState::Absent, OptionalFile::Regular { bytes, mode, .. }) => {
+            Some(*mode as u16) == agents.before_mode
+                && matches!(
+                    inspect_agents(Some(bytes.clone())),
+                    Ok(AgentsDocumentState::NoBlock { .. })
+                )
+                && bytes.len() == agents.managed_span.start as usize
+                && digest(bytes) == agents.prefix_sha256
+                && digest(&[]) == agents.suffix_sha256
+        }
+        (PriorManagedState::Bytes(immediate), OptionalFile::Regular { bytes, mode, .. }) => {
+            if Some(*mode as u16) != agents.before_mode {
+                return false;
+            }
+            let Ok(AgentsDocumentState::OneBlock(block)) = inspect_agents(Some(bytes.clone()))
+            else {
+                return false;
+            };
+            block.managed_bytes() == immediate.bytes
+                && digest(&bytes[..block.span.start]) == agents.prefix_sha256
+                && digest(&bytes[block.span.end..]) == agents.suffix_sha256
+        }
+        _ => false,
+    }
+}
+
+fn optional_matches_prior(
+    current: &OptionalFile,
+    expected: &PriorManagedState,
+    expected_mode: Option<u16>,
+) -> bool {
+    match (current, expected) {
+        (OptionalFile::Absent, PriorManagedState::Absent) => expected_mode.is_none(),
+        (OptionalFile::Regular { bytes, mode, .. }, PriorManagedState::Bytes(expected)) => {
+            bytes == &expected.bytes && Some(*mode as u16) == expected_mode
+        }
+        _ => false,
+    }
+}
+
+fn optional_matches_target(
+    current: &OptionalFile,
+    target: Option<&OwnedBytes>,
+    target_mode: Option<u16>,
+) -> bool {
+    match (current, target) {
+        (OptionalFile::Absent, None) => target_mode.is_none(),
+        (OptionalFile::Regular { bytes, mode, .. }, Some(target)) => {
+            bytes == &target.bytes && Some(*mode as u16) == target_mode
+        }
+        _ => false,
+    }
+}
+
+fn recover_configuration(repository: &HeldDirectory, plan: &RecoveryPlan) -> Result<(), Reason> {
+    let before = plan
+        .manifest
+        .configuration
+        .immediate_before
+        .as_ref()
+        .ok_or(Reason::InternalError)?;
+    restore_prior(
+        repository,
+        ".agent-lowmem.json",
+        &plan.configuration,
+        before,
+        plan.manifest.configuration.before_mode,
+    )
+}
+
+fn recover_agents(repository: &HeldDirectory, plan: &RecoveryPlan) -> Result<(), Reason> {
+    let OptionalFile::Regular { bytes, .. } = &plan.agents else {
+        return Err(Reason::InternalError);
+    };
+    let span = plan.agents_span.clone().ok_or(Reason::InternalError)?;
+    let agents = &plan.manifest.agents_policy;
+    let replacement = match &agents.immediate_before {
+        PriorManagedState::Absent => &[][..],
+        PriorManagedState::Bytes(before) => before.bytes.as_slice(),
+    };
+    let mut restored = Vec::with_capacity(bytes.len() - span.len() + replacement.len());
+    restored.extend_from_slice(&bytes[..span.start]);
+    restored.extend_from_slice(replacement);
+    restored.extend_from_slice(&bytes[span.end..]);
+    if restored.is_empty() && agents.document_was_absent {
+        return repository.remove_exact("AGENTS.md", &FilePrecondition::from(&plan.agents));
+    }
+    let mode = agents.before_mode.ok_or(Reason::InternalError)? as u32;
+    repository.replace_atomic(
+        "AGENTS.md",
+        &FilePrecondition::from(&plan.agents),
+        &restored,
+        mode,
+    )
+}
+
+fn restore_prior(
+    directory: &HeldDirectory,
+    name: &str,
+    current: &OptionalFile,
+    prior: &PriorManagedState,
+    mode: Option<u16>,
+) -> Result<(), Reason> {
+    match prior {
+        PriorManagedState::Absent => directory.remove_exact(name, &FilePrecondition::from(current)),
+        PriorManagedState::Bytes(before) => directory.replace_atomic(
+            name,
+            &FilePrecondition::from(current),
+            &before.bytes,
+            mode.ok_or(Reason::InternalError)? as u32,
+        ),
+    }
+}
+
+fn optional_bytes(file: &OptionalFile) -> Option<&[u8]> {
+    match file {
+        OptionalFile::Absent => None,
+        OptionalFile::Regular { bytes, .. } => Some(bytes),
+    }
+}
+
+fn digest(bytes: &[u8]) -> String {
+    hex_digest(&Sha256::digest(bytes).into())
 }
 
 #[derive(Serialize)]

@@ -767,21 +767,21 @@ pub(crate) fn recover_prepared(
 ) -> Result<(), Reason>;
 ```
 
-- [ ] **Step 1: Generate prepared fixtures for every before/target combination** across config and AGENTS. Assert recovery is allowed only when each destination equals one of those two recorded states.
+- [x] **Step 1: Generate prepared fixtures for every before/target combination** across config and AGENTS. Assert recovery is allowed only when each destination equals one of those two recorded states.
 
-- [ ] **Step 2: Test conflicting third states** for edited managed config, edited block, changed separator, missing expected file, duplicate marker, and surrounding-digest mismatch. Expect code 78 and byte-for-byte no change.
+- [x] **Step 2: Test conflicting third states** for edited managed config, edited block, changed separator, missing expected file, duplicate marker, and surrounding-digest mismatch. Expect code 78 and byte-for-byte no change.
 
-- [ ] **Step 3: Test command behavior**: both dry runs report `recovery-required` with code 0, reason `managed-file-conflict`, and zero writes; init rolls back, replans, then may apply; restore rolls back then restores the recovered previous applied state.
+- [x] **Step 3: Test command behavior available at this checkpoint**: init dry-run reports `recovery-required` with code 0, reason `managed-file-conflict`, and zero writes; init rolls back, replans, then may apply. The shared classifier and recovery plan are ready for the restore dry-run and recovered-restore command tests introduced with the bounded restore API in Task 11.
 
-- [ ] **Step 4: Confirm RED**
+- [x] **Step 4: Confirm RED**
 
 Run: `cargo test --test managed_files_recovery -j 1 -- --test-threads=1`
 
-- [ ] **Step 5: Implement classification and recovery** without full-file historical AGENTS bytes. Edit only a recognized intended managed span or a config matching a journal digest.
+- [x] **Step 5: Implement classification and recovery** without full-file historical AGENTS bytes. Edit only a recognized intended managed span or a config matching a journal digest.
 
-- [ ] **Step 6: Re-run failure injection followed by next-command recovery** for every Task 9 fault boundary.
+- [x] **Step 6: Re-run failure injection followed by next-command recovery** for every Task 9 fault boundary.
 
-- [ ] **Step 7: Verify and commit**
+- [x] **Step 7: Verify and commit**
 
 Run: `cargo test --test managed_files_recovery -j 1 -- --test-threads=1`
 
