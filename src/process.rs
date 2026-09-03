@@ -61,12 +61,8 @@ impl OwnedProcessGroup {
     }
 
     pub fn is_live(self) -> bool {
-        let Ok(identity) = ProcessIdentity::for_pid(self.id()) else {
-            return false;
-        };
-        identity.start_identity() == self.leader_start_identity
-            && getpgid(Some(self.id)).is_ok_and(|actual| actual == self.id)
-            && test_kill_process_group(self.id).is_ok()
+        self.status(GroupPhase::LeaderExpected)
+            .is_ok_and(|status| status == GroupStatus::Live)
     }
 }
 
@@ -85,6 +81,24 @@ pub enum ManagedSignal {
 }
 
 impl ManagedSignal {
+    pub const fn from_raw(signal: i32) -> Option<Self> {
+        match signal {
+            SIGINT => Some(Self::Interrupt),
+            SIGTERM => Some(Self::Terminate),
+            SIGHUP => Some(Self::Hangup),
+            _ => None,
+        }
+    }
+
+    pub const fn number(self) -> i32 {
+        match self {
+            Self::Interrupt => SIGINT,
+            Self::Terminate => SIGTERM,
+            Self::Hangup => SIGHUP,
+            Self::Kill => signal_hook::consts::signal::SIGKILL,
+        }
+    }
+
     const fn native(self) -> Signal {
         match self {
             Self::Interrupt => Signal::INT,
@@ -95,21 +109,66 @@ impl ManagedSignal {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GroupStatus {
+    Live,
+    Absent,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GroupPhase {
+    LeaderExpected,
+    LeaderReaped,
+    AfterKill,
+}
+
 pub trait GroupController {
-    fn is_live(&self) -> bool;
-    fn send(&self, signal: ManagedSignal) -> Result<(), Reason>;
+    fn status(&self, phase: GroupPhase) -> Result<GroupStatus, Reason>;
+    fn send(&self, signal: ManagedSignal, phase: GroupPhase) -> Result<(), Reason>;
 }
 
 impl GroupController for OwnedProcessGroup {
-    fn is_live(&self) -> bool {
-        (*self).is_live()
+    fn status(&self, phase: GroupPhase) -> Result<GroupStatus, Reason> {
+        match test_kill_process_group(self.id) {
+            Ok(()) => {}
+            Err(error) if error == rustix::io::Errno::SRCH => return Ok(GroupStatus::Absent),
+            Err(error) if error == rustix::io::Errno::PERM && phase == GroupPhase::AfterKill => {
+                return match getpgid(Some(self.id)) {
+                    Err(leader_error) if leader_error == rustix::io::Errno::SRCH => {
+                        Ok(GroupStatus::Live)
+                    }
+                    Ok(_) | Err(_) => Err(Reason::InternalError),
+                };
+            }
+            Err(_) => return Err(Reason::InternalError),
+        }
+
+        match getpgid(Some(self.id)) {
+            Ok(actual) if actual == self.id => match ProcessIdentity::for_pid(self.id()) {
+                Ok(identity) if identity.start_identity() == self.leader_start_identity => {
+                    Ok(GroupStatus::Live)
+                }
+                Ok(_) => Err(Reason::InternalError),
+                Err(_) => Err(Reason::InternalError),
+            },
+            Err(error)
+                if error == rustix::io::Errno::SRCH && phase != GroupPhase::LeaderExpected =>
+            {
+                Ok(GroupStatus::Live)
+            }
+            Ok(_) | Err(_) => Err(Reason::InternalError),
+        }
     }
 
-    fn send(&self, signal: ManagedSignal) -> Result<(), Reason> {
-        if !self.is_live() {
-            return Err(Reason::InternalError);
+    fn send(&self, signal: ManagedSignal, phase: GroupPhase) -> Result<(), Reason> {
+        if self.status(phase)? == GroupStatus::Absent {
+            return Ok(());
         }
-        kill_process_group(self.id, signal.native()).map_err(|_| Reason::InternalError)
+        match kill_process_group(self.id, signal.native()) {
+            Ok(()) => Ok(()),
+            Err(error) if error == rustix::io::Errno::SRCH => Ok(()),
+            Err(_) => Err(Reason::InternalError),
+        }
     }
 }
 

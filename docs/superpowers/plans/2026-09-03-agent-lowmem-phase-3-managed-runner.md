@@ -273,31 +273,34 @@ git commit -m "feat: launch an owned package manager group"
 **Files:**
 - Create: `src/supervisor.rs`
 - Modify: `src/lib.rs`
+- Modify: `src/process.rs`
+- Modify: `tests/run_process.rs`
 - Test: `src/supervisor.rs`
 - Create: `tests/run_supervision.rs`
 - Create: `tests/fixtures/runner/managed-child.sh`
+- Create: `tests/fixtures/runner/npm`
 
 **Interfaces:**
 - Consumes: `ManagedChild`, `OwnedProcessGroup`, `SignalSource`, injected `Clock`, configured timeout, and output sink.
 - Produces: `SupervisionReport { result, warning_emitted, elapsed_millis, cleanup_action, cleanup_complete }`.
 
-- [ ] **Step 1: Write pure failing state-machine tests**
+- [x] **Step 1: Write pure failing state-machine tests**
 
 Cover child success/failure/signal, signal-before-tick, child-before-signal, child-at-deadline, exactly one 80-percent warning, timeout, ten-second escalation, second-signal escalation, and no more than one ordinary wake per second.
 
-- [ ] **Step 2: Confirm RED**
+- [x] **Step 2: Confirm RED**
 
 Run: `cargo test supervisor::tests -j 1 -- --test-threads=1`
 
-- [ ] **Step 3: Implement the synchronous state machine**
+- [x] **Step 3: Implement the synchronous state machine**
 
 Use `Instant` in production and injected time in unit tests. Check child before boundary decisions, wait on the signal channel until the earliest deadline, distinguish `ExitStatusExt::signal()` from normal codes, and converge every terminal state on one group-cleanup routine.
 
-- [ ] **Step 4: Add real group integration tests**
+- [x] **Step 4: Add real group integration tests**
 
 Run fixture children that exit, self-signal, ignore TERM, and leave a same-group descendant. Assert only the fixture group receives signals and no fixture PID remains after cleanup.
 
-- [ ] **Step 5: Verify and commit**
+- [x] **Step 5: Verify and commit**
 
 Run: `cargo test supervisor -j 1 -- --test-threads=1`
 
@@ -306,7 +309,7 @@ Run: `cargo test --test run_supervision -j 1 -- --test-threads=1`
 Run: `cargo test -j 1 -- --test-threads=1`
 
 ```bash
-git add src/supervisor.rs src/lib.rs tests/run_supervision.rs tests/fixtures/runner/managed-child.sh
+git add docs/superpowers/specs/2026-09-03-agent-lowmem-phase-3-managed-runner-design.md docs/superpowers/plans/2026-09-03-agent-lowmem-phase-3-managed-runner.md src/supervisor.rs src/process.rs src/lib.rs tests/run_process.rs tests/run_supervision.rs tests/fixtures/runner/managed-child.sh tests/fixtures/runner/npm
 git commit -m "feat: supervise managed process groups"
 ```
 

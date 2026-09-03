@@ -1,6 +1,8 @@
 use agent_lowmem::{
     lock::{LeaseRecord, LockProbe, LockStatus, ProcessIdentity, UserLease},
-    process::{GroupController, ManagedSignal, NativeSignalSource, SignalSource, spawn_managed},
+    process::{
+        GroupController, GroupPhase, ManagedSignal, NativeSignalSource, SignalSource, spawn_managed,
+    },
     repository::{RunSelection, plan_run},
 };
 use std::{
@@ -139,7 +141,10 @@ fn signals_only_the_owned_group() {
     let (mut child, mut signals) = spawn_managed(&plan, &mut lease).unwrap();
     fixture.wait_for("child.json");
 
-    child.group().send(ManagedSignal::Terminate).unwrap();
+    child
+        .group()
+        .send(ManagedSignal::Terminate, GroupPhase::LeaderExpected)
+        .unwrap();
     let status = child.wait().unwrap();
 
     assert!(!status.success());
