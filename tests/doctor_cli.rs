@@ -188,6 +188,9 @@ fn zero_child_source_guard_rejects_launches_and_unsafe_blocks() {
         for forbidden in [
             "std::process::Command",
             "Command::new",
+            "node --version",
+            "npm config",
+            "pnpm config",
             "memorystatus_vm_pressure",
             "unsafe {",
         ] {
