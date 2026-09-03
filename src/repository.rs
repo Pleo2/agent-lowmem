@@ -3,6 +3,7 @@ use crate::{
         AdapterMatrix, load_embedded_matrix, match_package_manager, package_for_executable,
         resolve_installed_package,
     },
+    atomic_file::{OptionalFile, read_optional_bounded},
     configuration::{
         AgentLowmemConfig, OperationConfig, parse_config, select_operation, valid_key,
     },
@@ -21,24 +22,47 @@ use crate::{
         parse_pnpm_workspace, resolve_configured_workspace,
     },
 };
+use rustix::fs::{Mode, OFlags, openat};
 use semver::Version;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
     collections::BTreeMap,
-    fmt, fs, io,
+    fmt,
+    fs::{self, File},
+    io::{self, Read},
     path::{Path, PathBuf},
 };
 
 #[cfg(unix)]
 use std::os::unix::ffi::OsStrExt;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct GitRoot(PathBuf);
+const MAX_GIT_PATH_FILE_BYTES: usize = 4_096;
+const MAX_MANAGED_CONFIGURATION_BYTES: usize = 262_144;
 
-impl GitRoot {
-    fn as_path(&self) -> &Path {
-        &self.0
+#[derive(Clone, PartialEq, Eq)]
+pub struct GitRepository {
+    root: PathBuf,
+    metadata: PathBuf,
+}
+
+impl GitRepository {
+    pub(crate) fn root(&self) -> &Path {
+        &self.root
+    }
+
+    pub(crate) fn metadata(&self) -> &Path {
+        &self.metadata
+    }
+}
+
+impl fmt::Debug for GitRepository {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("GitRepository")
+            .field("root_resolved", &self.root().is_absolute())
+            .field("metadata_resolved", &self.metadata().is_absolute())
+            .finish()
     }
 }
 
@@ -86,7 +110,7 @@ impl fmt::Debug for RunSelection {
 
 #[derive(Clone, PartialEq, Eq)]
 pub struct RunPlan {
-    root: GitRoot,
+    root: GitRepository,
     policy: OperationPolicy,
     evidence: EvidenceSnapshot,
     repository_hash: [u8; 32],
@@ -116,7 +140,7 @@ impl RunPlan {
     }
 
     pub(crate) fn root(&self) -> &Path {
-        self.root.as_path()
+        self.root.root()
     }
 
     pub fn redacted(&self) -> RedactedRunPlan<'_> {
@@ -224,7 +248,7 @@ struct RootPackageManifest {
     scripts: BTreeMap<String, String>,
 }
 
-pub fn find_git_root(start: &Path) -> Result<Option<GitRoot>, RepositoryError> {
+pub fn find_git_repository(start: &Path) -> Result<Option<GitRepository>, RepositoryError> {
     let canonical_start = fs::canonicalize(start).map_err(repository_io_error)?;
     let first_directory = if canonical_start.is_dir() {
         canonical_start
@@ -236,19 +260,35 @@ pub fn find_git_root(start: &Path) -> Result<Option<GitRoot>, RepositoryError> {
     };
 
     for candidate in first_directory.ancestors() {
-        let marker = candidate.join(".git");
-        let metadata = match fs::symlink_metadata(&marker) {
-            Ok(metadata) => metadata,
-            Err(source) if source.kind() == io::ErrorKind::NotFound => continue,
-            Err(source) => return Err(repository_io_error(source)),
+        let directory = File::open(candidate).map_err(repository_io_error)?;
+        let marker = match openat(
+            &directory,
+            ".git",
+            OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+            Mode::empty(),
+        ) {
+            Ok(marker) => File::from(marker),
+            Err(source) if source == rustix::io::Errno::NOENT => continue,
+            Err(source) if source == rustix::io::Errno::LOOP => {
+                return Err(RepositoryError::InvalidGitPointer);
+            }
+            Err(source) => return Err(repository_errno(source)),
         };
+        let marker_metadata = marker.metadata().map_err(repository_io_error)?;
 
-        if metadata.is_dir() {
-            return Ok(Some(GitRoot(candidate.to_path_buf())));
+        if marker_metadata.is_dir() {
+            return Ok(Some(GitRepository {
+                root: candidate.to_path_buf(),
+                metadata: candidate.join(".git"),
+            }));
         }
 
-        if metadata.is_file() && valid_git_pointer(candidate, &marker)? {
-            return Ok(Some(GitRoot(candidate.to_path_buf())));
+        if marker_metadata.is_file() {
+            let metadata = resolve_git_pointer(candidate, marker)?;
+            return Ok(Some(GitRepository {
+                root: candidate.to_path_buf(),
+                metadata,
+            }));
         }
 
         return Err(RepositoryError::InvalidGitPointer);
@@ -258,11 +298,11 @@ pub fn find_git_root(start: &Path) -> Result<Option<GitRoot>, RepositoryError> {
 }
 
 pub fn inspect_repository(start: &Path) -> RepositoryReport {
-    let root = match find_git_root(start) {
+    let root = match find_git_repository(start) {
         Ok(Some(root)) => root,
         Ok(None) | Err(_) => return unsupported_repository(false, false),
     };
-    let package_path = root.as_path().join("package.json");
+    let package_path = root.root().join("package.json");
     match regular_file_state(&package_path) {
         Some(true) => {}
         Some(false) => return unsupported_repository(true, false),
@@ -286,11 +326,11 @@ pub fn inspect_repository(start: &Path) -> RepositoryReport {
         None => return unsupported_package_manager(),
     };
 
-    let npm_lock = match regular_file_state(&root.as_path().join("package-lock.json")) {
+    let npm_lock = match regular_file_state(&root.root().join("package-lock.json")) {
         Some(present) => present,
         None => return unsupported_repository(true, true),
     };
-    let pnpm_lock = match regular_file_state(&root.as_path().join("pnpm-lock.yaml")) {
+    let pnpm_lock = match regular_file_state(&root.root().join("pnpm-lock.yaml")) {
         Some(present) => present,
         None => return unsupported_repository(true, true),
     };
@@ -310,7 +350,7 @@ pub fn inspect_repository(start: &Path) -> RepositoryReport {
         return failed_repository(Some(package_manager), reason);
     }
 
-    let pnpm_document = match inspect_repository_shell(root.as_path(), package_manager.kind) {
+    let pnpm_document = match inspect_repository_shell(root.root(), package_manager.kind) {
         Ok(document) => document,
         Err(reason) => return failed_repository(Some(package_manager), reason),
     };
@@ -325,12 +365,12 @@ pub fn inspect_repository(start: &Path) -> RepositoryReport {
         Ok(patterns) => patterns,
         Err(error) => return failed_repository(Some(package_manager), error.reason()),
     };
-    let candidates = match expand_workspace_patterns(root.as_path(), &patterns) {
+    let candidates = match expand_workspace_patterns(root.root(), &patterns) {
         Ok(candidates) => candidates,
         Err(error) => return failed_repository(Some(package_manager), error.reason()),
     };
 
-    let config = match read_optional_file(root.as_path(), ".agent-lowmem.json") {
+    let config = match read_optional_file(root.root(), ".agent-lowmem.json") {
         Ok(Some(bytes)) => match parse_config(&bytes) {
             Ok(config) => Some(config),
             Err(error) => {
@@ -347,9 +387,9 @@ pub fn inspect_repository(start: &Path) -> RepositoryReport {
         return failed_repository(Some(package_manager), Reason::InvalidConfig);
     }
 
-    let node_evidence = inspect_repository_node_version(root.as_path());
+    let node_evidence = inspect_repository_node_version(root.root());
     let operations = collect_operation_summaries(OperationCollectionInput {
-        root: root.as_path(),
+        root: root.root(),
         root_scripts: &manifest.scripts,
         package_manager: &package_manager,
         matrix: &matrix,
@@ -376,11 +416,11 @@ pub fn plan_run(start: &Path, selection: &RunSelection) -> Result<RunPlan, Reaso
     {
         return Err(Reason::InvalidConfig);
     }
-    let root = find_git_root(start)
+    let root = find_git_repository(start)
         .map_err(|_| Reason::RepositoryUnsupported)?
         .ok_or(Reason::RepositoryUnsupported)?;
-    let reader = EvidenceReader::new(root.as_path())?;
-    let mut evidence = PlanningEvidence::new(reader, root.as_path());
+    let reader = EvidenceReader::new(root.root())?;
+    let mut evidence = PlanningEvidence::new(reader, root.root());
 
     let package_file = evidence.read("package.json", Reason::RepositoryUnsupported)?;
     let manifest: RootPackageManifest =
@@ -395,7 +435,7 @@ pub fn plan_run(start: &Path, selection: &RunSelection) -> Result<RunPlan, Reaso
         PackageManagerKind::Pnpm => ("pnpm-lock.yaml", "package-lock.json"),
     };
     evidence.read(selected_lock, Reason::PackageManagerUnsupported)?;
-    if regular_file_state(&root.as_path().join(other_lock)) != Some(false) {
+    if regular_file_state(&root.root().join(other_lock)) != Some(false) {
         return Err(Reason::PackageManagerUnsupported);
     }
 
@@ -431,7 +471,7 @@ pub fn plan_run(start: &Path, selection: &RunSelection) -> Result<RunPlan, Reaso
             .unwrap_or_default(),
     };
     let candidates =
-        expand_workspace_patterns(root.as_path(), &patterns).map_err(|error| error.reason())?;
+        expand_workspace_patterns(root.root(), &patterns).map_err(|error| error.reason())?;
     let mut workspace_manifests = BTreeMap::new();
     for candidate in &candidates {
         let relative_manifest = format!("{}/package.json", candidate.relative_path);
@@ -458,7 +498,7 @@ pub fn plan_run(start: &Path, selection: &RunSelection) -> Result<RunPlan, Reaso
 
     let (selected_package, target, scripts) = match selection.workspace_key.as_deref() {
         None => (
-            root.as_path().to_path_buf(),
+            root.root().to_path_buf(),
             PolicyTarget::Root,
             manifest.scripts,
         ),
@@ -473,7 +513,7 @@ pub fn plan_run(start: &Path, selection: &RunSelection) -> Result<RunPlan, Reaso
                 .get(&candidate.relative_path)
                 .ok_or(Reason::WorkspaceCardinality)?;
             (
-                root.as_path().join(&candidate.relative_path),
+                root.root().join(&candidate.relative_path),
                 PolicyTarget::Workspace {
                     key: workspace_key.to_owned(),
                     package_name: candidate.package_name.clone(),
@@ -485,7 +525,7 @@ pub fn plan_run(start: &Path, selection: &RunSelection) -> Result<RunPlan, Reaso
 
     let node_evidence = read_node_evidence(&mut evidence)?;
     let policy = build_run_policy(RunPolicyInput {
-        root: root.as_path(),
+        root: root.root(),
         selected_package: &selected_package,
         target,
         operation_key: &selection.operation_key,
@@ -500,7 +540,7 @@ pub fn plan_run(start: &Path, selection: &RunSelection) -> Result<RunPlan, Reaso
 
     let snapshot = EvidenceSnapshot::new(evidence.digests)?;
     Ok(RunPlan {
-        repository_hash: repository_hash(root.as_path()),
+        repository_hash: repository_hash(root.root()),
         root,
         policy,
         evidence: snapshot,
@@ -1038,7 +1078,11 @@ fn rejected_operation(
 }
 
 fn read_optional_file(root: &Path, name: &str) -> Result<Option<Vec<u8>>, Reason> {
-    read_optional_evidence(root, name, Reason::RepositoryUnsupported)
+    let directory = File::open(root).map_err(|_| Reason::RepositoryUnsupported)?;
+    match read_optional_bounded(&directory, name, MAX_MANAGED_CONFIGURATION_BYTES)? {
+        OptionalFile::Absent => Ok(None),
+        OptionalFile::Regular { bytes, .. } => Ok(Some(bytes)),
+    }
 }
 
 fn read_optional_evidence(
@@ -1067,23 +1111,78 @@ fn regular_file_state(path: &Path) -> Option<bool> {
     }
 }
 
-fn valid_git_pointer(root: &Path, marker: &Path) -> Result<bool, RepositoryError> {
-    let contents = fs::read_to_string(marker).map_err(repository_io_error)?;
-    let mut lines = contents.lines();
-    let Some(gitdir) = lines.next().and_then(|line| line.strip_prefix("gitdir: ")) else {
-        return Ok(false);
-    };
-    if gitdir.is_empty() || lines.next().is_some() {
-        return Ok(false);
+fn resolve_git_pointer(root: &Path, marker: File) -> Result<PathBuf, RepositoryError> {
+    let contents = read_git_path_file(marker)?;
+    let gitdir = parse_git_path_line(&contents)
+        .and_then(|line| line.strip_prefix("gitdir: "))
+        .filter(|path| !path.is_empty())
+        .ok_or(RepositoryError::InvalidGitPointer)?;
+    let metadata = resolve_git_path(root, gitdir)?;
+    let metadata_state =
+        fs::symlink_metadata(&metadata).map_err(|_| RepositoryError::InvalidGitPointer)?;
+    if metadata_state.file_type().is_symlink() || !metadata_state.is_dir() {
+        return Err(RepositoryError::InvalidGitPointer);
     }
+    let metadata = fs::canonicalize(metadata).map_err(|_| RepositoryError::InvalidGitPointer)?;
+    validate_worktree_backlink(root, &metadata)?;
+    Ok(metadata)
+}
 
-    let gitdir_path = Path::new(gitdir);
-    let resolved = if gitdir_path.is_absolute() {
-        gitdir_path.to_path_buf()
+fn validate_worktree_backlink(root: &Path, metadata: &Path) -> Result<(), RepositoryError> {
+    let directory = File::open(metadata).map_err(repository_io_error)?;
+    let backlink = openat(
+        &directory,
+        "gitdir",
+        OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+        Mode::empty(),
+    )
+    .map(File::from)
+    .map_err(|_| RepositoryError::InvalidGitPointer)?;
+    let contents = read_git_path_file(backlink)?;
+    let backlink = parse_git_path_line(&contents)
+        .filter(|path| !path.is_empty())
+        .ok_or(RepositoryError::InvalidGitPointer)?;
+    let resolved = resolve_git_path(metadata, backlink)?;
+    let resolved = fs::canonicalize(resolved).map_err(|_| RepositoryError::InvalidGitPointer)?;
+    if resolved != root.join(".git") {
+        return Err(RepositoryError::InvalidGitPointer);
+    }
+    Ok(())
+}
+
+fn resolve_git_path(base: &Path, value: &str) -> Result<PathBuf, RepositoryError> {
+    if value.contains('\0') {
+        return Err(RepositoryError::InvalidGitPointer);
+    }
+    let value = Path::new(value);
+    Ok(if value.is_absolute() {
+        value.to_path_buf()
     } else {
-        root.join(gitdir_path)
-    };
-    Ok(resolved.is_dir())
+        base.join(value)
+    })
+}
+
+fn read_git_path_file(mut file: File) -> Result<Vec<u8>, RepositoryError> {
+    let metadata = file.metadata().map_err(repository_io_error)?;
+    if !metadata.is_file() || metadata.len() > MAX_GIT_PATH_FILE_BYTES as u64 {
+        return Err(RepositoryError::InvalidGitPointer);
+    }
+    let mut contents = Vec::with_capacity(metadata.len() as usize);
+    file.by_ref()
+        .take(MAX_GIT_PATH_FILE_BYTES as u64 + 1)
+        .read_to_end(&mut contents)
+        .map_err(repository_io_error)?;
+    if contents.len() > MAX_GIT_PATH_FILE_BYTES {
+        return Err(RepositoryError::InvalidGitPointer);
+    }
+    Ok(contents)
+}
+
+fn parse_git_path_line(contents: &[u8]) -> Option<&str> {
+    let line = std::str::from_utf8(contents).ok()?;
+    let line = line.strip_suffix('\n').unwrap_or(line);
+    let line = line.strip_suffix('\r').unwrap_or(line);
+    (!line.is_empty() && !line.contains(['\r', '\n', '\0'])).then_some(line)
 }
 
 fn parse_package_manager(declaration: &str) -> Option<PackageManagerReport> {
@@ -1138,10 +1237,15 @@ fn repository_io_error(source: io::Error) -> RepositoryError {
     RepositoryError::Io(source.kind())
 }
 
+fn repository_errno(source: rustix::io::Errno) -> RepositoryError {
+    repository_io_error(source.into())
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        PackageManagerKind, RunSelection, find_git_root, inspect_repository, plan_run, plans_match,
+        PackageManagerKind, RunSelection, find_git_repository, inspect_repository, plan_run,
+        plans_match,
     };
     use crate::result::Reason;
     use std::{
@@ -1437,17 +1541,122 @@ mod tests {
         let fixture = Fixture::git_repo();
         fixture.mkdir("packages/web/src");
 
-        let root = find_git_root(&fixture.path().join("packages/web/src"))
+        let root = find_git_repository(&fixture.path().join("packages/web/src"))
             .unwrap()
             .unwrap();
 
-        assert_eq!(root.as_path(), fixture.path());
+        assert_eq!(root.root(), fixture.path());
+        assert_eq!(root.metadata(), fixture.path().join(".git"));
+    }
+
+    #[test]
+    fn resolves_git_directory_metadata_without_debug_path_exposure() {
+        let fixture = Fixture::git_repo();
+        fixture.mkdir("packages/web/src");
+
+        let repository = find_git_repository(&fixture.path().join("packages/web/src"))
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(repository.root(), fixture.path());
+        assert_eq!(repository.metadata(), fixture.path().join(".git"));
+        let debug = format!("{repository:?}");
+        assert!(debug.contains("root_resolved"));
+        assert!(debug.contains("metadata_resolved"));
+        assert!(!debug.contains(fixture.path().to_str().unwrap()));
+    }
+
+    #[test]
+    fn resolves_git_relative_and_absolute_worktree_pointers_with_exact_backlinks() {
+        for absolute in [false, true] {
+            let fixture = Fixture::empty();
+            fixture.mkdir("metadata");
+            let marker = fixture.path().join(".git");
+            fixture.write(
+                "metadata/gitdir",
+                &format!("{}\n", marker.to_string_lossy()),
+            );
+            let target = if absolute {
+                fixture
+                    .path()
+                    .join("metadata")
+                    .to_string_lossy()
+                    .into_owned()
+            } else {
+                "metadata".to_owned()
+            };
+            fixture.write(".git", &format!("gitdir: {target}\n"));
+
+            let repository = find_git_repository(fixture.path()).unwrap().unwrap();
+
+            assert_eq!(repository.root(), fixture.path());
+            assert_eq!(repository.metadata(), fixture.path().join("metadata"));
+        }
+    }
+
+    #[test]
+    fn resolves_git_pointer_only_when_metadata_belongs_to_the_checkout() {
+        let missing_backlink = Fixture::empty();
+        missing_backlink.mkdir("metadata");
+        missing_backlink.write(".git", "gitdir: metadata\n");
+
+        assert_eq!(
+            find_git_repository(missing_backlink.path()).unwrap_err(),
+            super::RepositoryError::InvalidGitPointer
+        );
+
+        let wrong_backlink = Fixture::empty();
+        wrong_backlink.mkdir("metadata");
+        wrong_backlink.write("metadata/gitdir", "/tmp/unrelated-checkout/.git\n");
+        wrong_backlink.write(".git", "gitdir: metadata\n");
+
+        assert_eq!(
+            find_git_repository(wrong_backlink.path()).unwrap_err(),
+            super::RepositoryError::InvalidGitPointer
+        );
+    }
+
+    #[test]
+    fn resolves_git_pointer_with_bounded_single_line_grammar() {
+        for pointer in [
+            "gitdir: \n".to_owned(),
+            "gitdir: metadata\nsecond-line\n".to_owned(),
+            format!("gitdir: {}\n", "a".repeat(4_096)),
+        ] {
+            let fixture = Fixture::empty();
+            fixture.mkdir("metadata");
+            fixture.write(".git", &pointer);
+
+            assert_eq!(
+                find_git_repository(fixture.path()).unwrap_err(),
+                super::RepositoryError::InvalidGitPointer
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn resolves_git_pointer_without_following_a_marker_symlink() {
+        use std::os::unix::fs::symlink;
+
+        let fixture = Fixture::empty();
+        fixture.mkdir("metadata");
+        symlink("metadata", fixture.path().join(".git")).unwrap();
+
+        assert_eq!(
+            find_git_repository(fixture.path()).unwrap_err(),
+            super::RepositoryError::InvalidGitPointer
+        );
     }
 
     #[test]
     fn accepts_a_valid_worktree_git_pointer() {
         let fixture = Fixture::empty();
         fixture.mkdir("git-data");
+        fixture.write(
+            "git-data/gitdir",
+            &format!("{}\n", fixture.path().join(".git").to_string_lossy()),
+        );
         fixture.write(".git", "gitdir: git-data\n");
         fixture.write("package.json", r#"{"packageManager":"npm@12.0.2"}"#);
         fixture.write("package-lock.json", "{}\n");
@@ -1470,6 +1679,20 @@ mod tests {
 
         assert!(report.root_package_available);
         assert_eq!(report.failure_reason, Some(Reason::RepositoryUnsupported));
+    }
+
+    #[test]
+    fn rejects_oversized_managed_configuration_during_repository_inspection() {
+        let fixture = Fixture::git_repo();
+        fixture.write("package.json", r#"{"packageManager":"npm@12.0.2"}"#);
+        fixture.write("package-lock.json", "{}\n");
+        let mut configuration = r#"{"version":1,"packageManager":"npm"}"#.to_owned();
+        configuration.push_str(&" ".repeat(262_145 - configuration.len()));
+        fixture.write(".agent-lowmem.json", &configuration);
+
+        let report = inspect_repository(fixture.path());
+
+        assert_eq!(report.failure_reason, Some(Reason::ManagedFileConflict));
     }
 
     #[test]

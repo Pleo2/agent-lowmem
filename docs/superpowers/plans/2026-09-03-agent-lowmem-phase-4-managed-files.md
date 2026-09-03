@@ -160,7 +160,12 @@ pub fn find_git_repository(start: &Path)
 
 pub(crate) enum OptionalFile {
     Absent,
-    Regular { bytes: Vec<u8>, sha256: [u8; 32], mode: u32 },
+    Regular {
+        bytes: Vec<u8>,
+        sha256: [u8; 32],
+        mode: u32,
+        owner_uid: u32,
+    },
 }
 
 pub(crate) fn read_optional_bounded(
@@ -172,25 +177,27 @@ pub(crate) fn read_optional_bounded(
 
 `GitRepository` gets a custom redacted `Debug` implementation that exposes only whether root and metadata were resolved. It must never format either path.
 
-- [ ] **Step 1: Write Git discovery tests** for an ordinary `.git` directory, a valid relative worktree pointer, a valid absolute pointer admitted by the existing bounded/containment contract, an escaping or otherwise non-admitted pointer, an invalid/multiline pointer, a symlink marker, and a pointer whose target is not a directory.
+A pointer-file checkout is bound bidirectionally: root `.git` resolves to the metadata directory, and that directory's bounded `gitdir` file must resolve exactly back to the root `.git` identity. This admits ordinary absolute and relative Git worktree pointers while rejecting arbitrary directories.
 
-- [ ] **Step 2: Write bounded-reader tests** proving absent state, exact digest, early oversized rejection, symlink/special-file rejection, and no-follow behavior for parent and final components. Add private-directory and journal identity cases for wrong owner or mode; the accepted identities are exactly metadata child `agent-lowmem` at `0700` and its child `restoration-v1.json` at `0600`.
+- [x] **Step 1: Write Git discovery tests** for an ordinary `.git` directory, a valid relative worktree pointer, a valid absolute pointer admitted by the existing bounded/containment contract, an escaping or otherwise non-admitted pointer, an invalid/multiline pointer, a symlink marker, and a pointer whose target is not a directory.
 
-- [ ] **Step 3: Confirm RED**
+- [x] **Step 2: Write bounded-reader tests** proving absent state, exact digest, early oversized rejection, symlink/special-file rejection, and no-follow behavior for parent and final components. Return mode and owner UID as discovery evidence without exposing file bytes through `Debug`; Task 7 enforces the exact private-directory `0700` and journal `0600` policy when it introduces held mutable directories.
+
+- [x] **Step 3: Confirm RED**
 
 Run: `cargo test repository::tests::resolves_git -j 1 -- --test-threads=1`
 
 Run: `cargo test atomic_file::tests -j 1 -- --test-threads=1`
 
-- [ ] **Step 4: Refactor root discovery without behavior drift**
+- [x] **Step 4: Refactor root discovery without behavior drift**
 
 Replace the private `GitRoot` with `GitRepository`, make `find_git_root` callers use `find_git_repository`, and keep metadata paths private from `Debug`, public reports, and errors. Do not execute `git`.
 
-- [ ] **Step 5: Implement bounded descriptor-relative reads**
+- [x] **Step 5: Implement bounded descriptor-relative reads**
 
 Use `openat` with `NOFOLLOW | CLOEXEC`, validate regular files from the opened descriptor, inspect length before allocation, read at most `max_bytes + 1`, and hash exactly the returned bytes.
 
-- [ ] **Step 6: Verify all repository regressions and commit**
+- [x] **Step 6: Verify all repository regressions and commit**
 
 Run: `cargo test repository -j 1 -- --test-threads=1`
 
