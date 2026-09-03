@@ -9,6 +9,7 @@ pub mod doctor;
 pub mod evidence;
 pub mod host;
 pub mod lock;
+pub mod managed_files;
 pub mod package_manager;
 pub mod policy;
 pub mod process;

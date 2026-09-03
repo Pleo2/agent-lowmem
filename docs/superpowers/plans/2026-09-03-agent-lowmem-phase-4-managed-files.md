@@ -430,21 +430,21 @@ pub struct ManagedIssueReport {
 }
 ```
 
-- [ ] **Step 1: Write the schema first** with `additionalProperties: false`, all required top-level fields, closed enums, lowercase 64-character SHA-256 patterns, and optional fields matching the spec exactly.
+- [x] **Step 1: Write the schema first** with `additionalProperties: false`, all required top-level fields, closed enums, lowercase 64-character SHA-256 patterns, and optional fields matching the spec exactly.
 
-- [ ] **Step 2: Add schema validation tests** against one sample for every outcome and negative samples for unknown identities, actions, reasons, extra fields, invalid hashes, target content, absolute paths, and timestamps.
+- [x] **Step 2: Add schema validation tests** against one sample for every outcome and negative samples for unknown identities, actions, reasons, extra fields, invalid hashes, target content, absolute paths, and timestamps.
 
-- [ ] **Step 3: Confirm RED**
+- [x] **Step 3: Confirm RED**
 
 Run: `cargo test --test managed_files_report -j 1 -- --test-threads=1`
 
-- [ ] **Step 4: Implement typed report construction and validation**
+- [x] **Step 4: Implement typed report construction and validation**
 
 Sort files by identity, operations by `(workspace_key, operation_key)`, candidates by their full tuple, and issues by `(reason, workspace_path, package_name, operation_key)`. Permit only existing `Reason` values that Phase 4 can emit. Ordinary success uses `{ code: 0, reason: completed }`; the one exception is dry-run classification of a recoverable prepared journal, which uses `{ code: 0, reason: managed-file-conflict }` with outcome `recovery-required`. Neither case constructs `ExitResult`.
 
 Validate the exact code/reason families: 2 for `invalid-cli`/`invalid-config`; 64 for supported preflight-policy reasons; 73 for `lock-held`/`nested-invocation`; 75 for `evidence-changed`; 78 for `managed-file-conflict`; 70 for `internal-error`; and the two code-0 forms above. Never admit child, timeout, or signal outcomes in this schema.
 
-- [ ] **Step 5: Add redaction regression assertions**
+- [x] **Step 5: Add redaction regression assertions**
 
 ```rust
 for forbidden in [root_path, git_path, secret, raw_script, "transactionId", "timestamp"] {
@@ -453,7 +453,7 @@ for forbidden in [root_path, git_path, secret, raw_script, "transactionId", "tim
 assert!(!serialized.contains('\u{1b}'));
 ```
 
-- [ ] **Step 6: Verify and commit**
+- [x] **Step 6: Verify and commit**
 
 Run: `cargo test --test managed_files_report -j 1 -- --test-threads=1`
 

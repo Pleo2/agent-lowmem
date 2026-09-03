@@ -1,0 +1,319 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentlowmem.dev/schema/managed-files-result-v1.json",
+  "title": "Agent Lowmem managed files result v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "command",
+    "dryRun",
+    "outcome",
+    "result",
+    "files",
+    "operations",
+    "manualCandidates",
+    "issues",
+    "manifestState"
+  ],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "command": { "enum": ["init", "restore"] },
+    "dryRun": { "type": "boolean" },
+    "outcome": {
+      "enum": [
+        "planned",
+        "applied",
+        "restored",
+        "unchanged",
+        "recovery-required",
+        "conflict",
+        "failed"
+      ]
+    },
+    "result": { "$ref": "#/$defs/result" },
+    "files": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/file" }
+    },
+    "operations": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/operation" }
+    },
+    "manualCandidates": {
+      "type": "array",
+      "maxItems": 256,
+      "items": { "$ref": "#/$defs/manualCandidate" }
+    },
+    "issues": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/issue" }
+    },
+    "manifestState": { "enum": ["absent", "prepared", "applied"] }
+  },
+  "$defs": {
+    "reason": {
+      "enum": [
+        "completed",
+        "invalid-cli",
+        "invalid-config",
+        "host-unsupported",
+        "repository-unsupported",
+        "package-manager-unsupported",
+        "workspace-unsupported",
+        "workspace-cardinality",
+        "operation-unsupported",
+        "script-syntax-unsupported",
+        "script-shell-unsupported",
+        "script-reference-unsupported",
+        "script-graph-too-large",
+        "wrapper-unsupported",
+        "tool-unsupported",
+        "tool-version-unsupported",
+        "watch-denied",
+        "ui-denied",
+        "background-denied",
+        "parallel-denied",
+        "argument-denied",
+        "nonfinal-injection-required",
+        "lock-held",
+        "nested-invocation",
+        "evidence-changed",
+        "managed-file-conflict",
+        "internal-error"
+      ]
+    },
+    "result": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["code", "reason"],
+      "properties": {
+        "code": { "type": "integer" },
+        "reason": { "$ref": "#/$defs/reason" }
+      },
+      "oneOf": [
+        {
+          "properties": {
+            "code": { "const": 0 },
+            "reason": { "enum": ["completed", "managed-file-conflict"] }
+          }
+        },
+        {
+          "properties": {
+            "code": { "const": 2 },
+            "reason": { "enum": ["invalid-cli", "invalid-config"] }
+          }
+        },
+        {
+          "properties": {
+            "code": { "const": 64 },
+            "reason": {
+              "enum": [
+                "host-unsupported",
+                "repository-unsupported",
+                "package-manager-unsupported",
+                "workspace-unsupported",
+                "workspace-cardinality",
+                "operation-unsupported",
+                "script-syntax-unsupported",
+                "script-shell-unsupported",
+                "script-reference-unsupported",
+                "script-graph-too-large",
+                "wrapper-unsupported",
+                "tool-unsupported",
+                "tool-version-unsupported",
+                "watch-denied",
+                "ui-denied",
+                "background-denied",
+                "parallel-denied",
+                "argument-denied",
+                "nonfinal-injection-required"
+              ]
+            }
+          }
+        },
+        {
+          "properties": {
+            "code": { "const": 73 },
+            "reason": { "enum": ["lock-held", "nested-invocation"] }
+          }
+        },
+        {
+          "properties": {
+            "code": { "const": 75 },
+            "reason": { "const": "evidence-changed" }
+          }
+        },
+        {
+          "properties": {
+            "code": { "const": 78 },
+            "reason": { "const": "managed-file-conflict" }
+          }
+        },
+        {
+          "properties": {
+            "code": { "const": 70 },
+            "reason": { "const": "internal-error" }
+          }
+        }
+      ]
+    },
+    "file": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["identity", "action"],
+      "properties": {
+        "identity": {
+          "enum": ["configuration", "agents-policy", "restoration-manifest"]
+        },
+        "action": {
+          "enum": ["create", "replace", "remove", "unchanged", "preserve", "conflict"]
+        },
+        "beforeSha256": { "$ref": "#/$defs/sha256" },
+        "targetSha256": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "operation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["operationKey"],
+      "properties": {
+        "operationKey": { "$ref": "#/$defs/key" },
+        "workspaceKey": { "$ref": "#/$defs/key" }
+      }
+    },
+    "manualCandidate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["operationPrefix", "scriptName"],
+      "properties": {
+        "operationPrefix": { "enum": ["test", "typecheck", "lint", "build"] },
+        "scriptName": { "type": "string", "minLength": 1 },
+        "workspaceKey": { "$ref": "#/$defs/key" }
+      }
+    },
+    "issue": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["reason"],
+      "properties": {
+        "reason": { "$ref": "#/$defs/reason" },
+        "operationKey": { "$ref": "#/$defs/key" },
+        "workspacePath": { "$ref": "#/$defs/relativePath" },
+        "packageName": { "type": "string", "minLength": 1, "maxLength": 214 }
+      }
+    },
+    "key": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9-]{0,31}$"
+    },
+    "relativePath": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^(?!.*(?:^|/)\\.{1,2}(?:/|$))[^/\\\\\\u0000]+(?:/[^/\\\\\\u0000]+)*$"
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "outcome": { "const": "planned" } } },
+      "then": {
+        "properties": {
+          "dryRun": { "const": true },
+          "result": {
+            "properties": {
+              "code": { "const": 0 },
+              "reason": { "const": "completed" }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "outcome": { "enum": ["applied", "restored"] } } },
+      "then": {
+        "properties": {
+          "dryRun": { "const": false },
+          "result": {
+            "properties": {
+              "code": { "const": 0 },
+              "reason": { "const": "completed" }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "outcome": { "const": "unchanged" } } },
+      "then": {
+        "properties": {
+          "result": {
+            "properties": {
+              "code": { "const": 0 },
+              "reason": { "const": "completed" }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "outcome": { "const": "recovery-required" } } },
+      "then": {
+        "properties": {
+          "dryRun": { "const": true },
+          "result": {
+            "properties": {
+              "code": { "const": 0 },
+              "reason": { "const": "managed-file-conflict" }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "outcome": { "const": "conflict" } } },
+      "then": {
+        "properties": {
+          "result": {
+            "properties": {
+              "code": { "const": 78 },
+              "reason": { "const": "managed-file-conflict" }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "outcome": { "const": "failed" } } },
+      "then": {
+        "properties": {
+          "result": {
+            "properties": {
+              "code": { "not": { "const": 0 } },
+              "reason": { "not": { "const": "managed-file-conflict" } }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "command": { "const": "init" } } },
+      "then": {
+        "properties": {
+          "outcome": { "not": { "const": "restored" } }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "command": { "const": "restore" } } },
+      "then": {
+        "properties": {
+          "outcome": { "not": { "const": "applied" } }
+        }
+      }
+    }
+  ]
+}
