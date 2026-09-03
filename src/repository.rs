@@ -231,6 +231,8 @@ pub struct OperationSummary {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reason: Option<Reason>,
     pub disclosures: Vec<String>,
+    #[serde(skip)]
+    pub(crate) evidence_files: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
@@ -726,7 +728,7 @@ fn record_installed_package_for_plan(
     Ok(())
 }
 
-fn repository_hash(root: &Path) -> [u8; 32] {
+pub(crate) fn repository_hash(root: &Path) -> [u8; 32] {
     #[cfg(unix)]
     let bytes = root.as_os_str().as_bytes();
     #[cfg(not(unix))]
@@ -918,13 +920,14 @@ fn collect_operation_summaries(input: OperationCollectionInput<'_>) -> Vec<Opera
 
 fn analyze_operation(input: OperationAnalysisInput<'_>) -> OperationSummary {
     match try_analyze_operation(&input) {
-        Ok(disclosures) => OperationSummary {
+        Ok((disclosures, evidence_files)) => OperationSummary {
             workspace_key: workspace_key(&input.target).map(str::to_owned),
             operation_key: input.operation_key.to_owned(),
             status: OperationStatus::Runnable,
             configured: input.configured,
             reason: None,
             disclosures,
+            evidence_files,
         },
         Err(reason) => rejected_operation(
             workspace_key(&input.target),
@@ -935,7 +938,53 @@ fn analyze_operation(input: OperationAnalysisInput<'_>) -> OperationSummary {
     }
 }
 
-fn try_analyze_operation(input: &OperationAnalysisInput<'_>) -> Result<Vec<String>, Reason> {
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn analyze_managed_operation(
+    root: &Path,
+    selected_package: &Path,
+    target: PolicyTarget,
+    operation_key: &str,
+    operation: &OperationConfig,
+    scripts: &BTreeMap<String, String>,
+    package_manager: &PackageManagerReport,
+    configured: bool,
+) -> OperationSummary {
+    let matrix = match load_embedded_matrix() {
+        Ok(matrix) => matrix,
+        Err(reason) => {
+            return rejected_operation(workspace_key(&target), operation_key, configured, reason);
+        }
+    };
+    let node_evidence = inspect_repository_node_version(root);
+    let mut evidence_files = base_evidence_files(package_manager.kind, configured, root);
+    if selected_package != root {
+        let relative = selected_package
+            .strip_prefix(root)
+            .ok()
+            .and_then(Path::to_str)
+            .map(|path| path.replace(std::path::MAIN_SEPARATOR, "/"));
+        if let Some(relative) = relative {
+            evidence_files.push(format!("{relative}/package.json"));
+        }
+    }
+    analyze_operation(OperationAnalysisInput {
+        root,
+        selected_package,
+        target,
+        operation_key,
+        operation,
+        scripts,
+        package_manager,
+        matrix: &matrix,
+        node_evidence: &node_evidence,
+        configured,
+        evidence_files,
+    })
+}
+
+fn try_analyze_operation(
+    input: &OperationAnalysisInput<'_>,
+) -> Result<(Vec<String>, Vec<String>), Reason> {
     let graph = expand_script_graph(&input.operation.script, input.scripts)?;
     let mut installed_versions = BTreeMap::new();
     let mut evidence_files = input.evidence_files.clone();
@@ -1003,7 +1052,7 @@ fn try_analyze_operation(input: &OperationAnalysisInput<'_>) -> Result<Vec<Strin
         forwarded_arguments: &[],
         evidence_files: &evidence_files,
     })?;
-    Ok(policy.disclosures)
+    Ok((policy.disclosures, evidence_files))
 }
 
 fn record_installed_package(
@@ -1074,6 +1123,7 @@ fn rejected_operation(
         configured,
         reason: Some(reason),
         disclosures: Vec::new(),
+        evidence_files: Vec::new(),
     }
 }
 

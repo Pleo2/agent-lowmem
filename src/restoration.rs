@@ -7,7 +7,7 @@ use sha2::{Digest, Sha256};
 use std::{fmt, str};
 
 pub(crate) const MAX_MANIFEST_BYTES: usize = 262_144;
-const MAX_CONFIGURATION_BYTES: usize = 262_144;
+pub(crate) const MAX_CONFIGURATION_BYTES: usize = 262_144;
 const MAX_MANAGED_BLOCK_BYTES: usize = 65_536;
 const MAX_DOCUMENT_BYTES: u32 = 1_048_576;
 const SCHEMA_VERSION: u8 = 1;
@@ -326,7 +326,7 @@ fn valid_agents(agents: &AgentsRestoration) -> bool {
         _ => agents.target.as_ref().map(|target| target.bytes.len()),
     };
     expected_length.is_some_and(|length| span_length == u32::try_from(length).ok())
-        && valid_managed_action(
+        && valid_agents_action(
             agents.action,
             &agents.immediate_before,
             agents.target.as_ref(),
@@ -339,6 +339,44 @@ fn valid_agents(agents: &AgentsRestoration) -> bool {
                 && agents.before_mode.is_none()
                 && agents.managed_span.start == 0
                 && agents.inserted_separator.is_empty()))
+}
+
+fn valid_agents_action(
+    action: DestinationAction,
+    immediate: &PriorManagedState,
+    target: Option<&OwnedBytes>,
+    before_mode: Option<u16>,
+    target_mode: Option<u16>,
+) -> bool {
+    match action {
+        DestinationAction::Create => {
+            matches!(immediate, PriorManagedState::Absent)
+                && target.is_some()
+                && match before_mode {
+                    None => target_mode == Some(0o600),
+                    Some(mode) => target_mode == Some(mode),
+                }
+        }
+        DestinationAction::Replace => {
+            matches!(immediate, PriorManagedState::Bytes(_))
+                && target.is_some()
+                && before_mode.is_some()
+                && before_mode == target_mode
+        }
+        DestinationAction::Remove => {
+            matches!(immediate, PriorManagedState::Bytes(_))
+                && target.is_none()
+                && before_mode.is_some()
+                && target_mode.is_none()
+        }
+        DestinationAction::Unchanged => {
+            prior_bytes(immediate)
+                .is_some_and(|before| target.is_some_and(|target| before == &target.bytes))
+                && before_mode.is_some()
+                && before_mode == target_mode
+        }
+        DestinationAction::Preserve => false,
+    }
 }
 
 fn valid_managed_action(

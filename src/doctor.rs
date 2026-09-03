@@ -194,6 +194,7 @@ mod tests {
                 configured: true,
                 reason: None,
                 disclosures: Vec::new(),
+                evidence_files: Vec::new(),
             }],
             failure_reason: None,
         };

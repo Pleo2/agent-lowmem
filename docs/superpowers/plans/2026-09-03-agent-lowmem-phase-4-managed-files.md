@@ -627,31 +627,31 @@ pub(crate) fn managed_plans_match(
 ) -> bool;
 ```
 
-- [ ] **Step 1: Add root-operation planner tests** covering each canonical script as runnable/rejected, required installed-tool evidence, rejected omission, prefixed manual candidates, no runnable operation, unsupported manager, lockfile mismatch, and init host gate.
+- [x] **Step 1: Add root-operation planner tests** covering each canonical script as runnable/rejected, required installed-tool evidence, rejected omission, prefixed manual candidates, no runnable operation, unsupported manager, lockfile mismatch, and init host gate.
 
-- [ ] **Step 2: Add workspace planner tests** for scoped-name final component, already-invalid key, collision, 128/129 workspace boundary, 256/257 candidate boundary, stable sorting, safe root survival, and unrelated-workspace survival.
+- [x] **Step 2: Add workspace planner tests** for scoped-name final component, already-invalid key, collision, 128/129 workspace boundary, 256/257 candidate boundary, stable sorting, safe root survival, and unrelated-workspace survival.
 
-- [ ] **Step 3: Add configuration ownership table tests** for absent, exact unjournaled adoption, valid different external preservation, external rerun, managed exact replacement, managed edited conflict, invalid config, unrunnable configured operation, symlink, special, non-UTF-8, and oversized input.
+- [x] **Step 3: Add configuration ownership table tests** for absent, exact unjournaled adoption, valid different external preservation, external rerun, managed exact replacement, managed edited conflict, invalid config, unrunnable configured operation, symlink, special, non-UTF-8, and oversized input.
 
-- [ ] **Step 4: Add AGENTS ownership table tests** for absent/create, no block/append, one valid/replace, exact/unchanged, pre-journal adoption, malformed/conflict, edited managed/conflict, and exterior-byte preservation.
+- [x] **Step 4: Add AGENTS ownership table tests** for absent/create, no block/append, one valid/replace, exact/unchanged, pre-journal adoption, malformed/conflict, edited managed/conflict, and exterior-byte preservation.
 
-- [ ] **Step 5: Confirm RED**
+- [x] **Step 5: Confirm RED**
 
 Run: `cargo test --test managed_files_planning -j 1 -- --test-threads=1`
 
-- [ ] **Step 6: Extract one reusable repository-policy collection path**
+- [x] **Step 6: Extract one reusable repository-policy collection path**
 
 Refactor `inspect_repository` and managed-file planning to consume the existing package-manager, workspace, script-graph, wrapper, adapter, and tool-version logic. Do not copy the classifier. Keep `plan_run` semantics unchanged. For an external configuration, validate every configured root/workspace operation against current evidence and build the AGENTS block from those effective configured operation keys—not from generated defaults.
 
-- [ ] **Step 7: Build the immutable plan and exact comparison**
+- [x] **Step 7: Build the immutable plan and exact comparison**
 
 Compare command kind, request authorization, evidence identities/digests, ownership, actions, target bytes, rollback descriptors, and journal target. Exclude display paths, mtimes, terminal state, and map iteration order.
 
-- [ ] **Step 8: Prove planning privacy and zero-child behavior**
+- [x] **Step 8: Prove planning privacy and zero-child behavior**
 
 Use sentinel executables for `git`, `node`, `npm`, and `pnpm`; assert no marker. Assert `Debug` and serialized reports omit raw scripts, target content, manual bytes, absolute paths, environment values, and Git metadata paths.
 
-- [ ] **Step 9: Verify and commit**
+- [x] **Step 9: Verify and commit**
 
 Run: `cargo test --test managed_files_planning -j 1 -- --test-threads=1`
 

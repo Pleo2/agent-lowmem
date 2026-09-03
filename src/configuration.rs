@@ -7,9 +7,8 @@ const CONFIG_VERSION: u8 = 1;
 pub(crate) const MIN_TIMEOUT_SECONDS: u16 = 60;
 pub(crate) const MAX_TIMEOUT_SECONDS: u16 = 3_600;
 pub(crate) const MAX_KEY_BYTES: usize = 32;
+pub(crate) const MAX_CONFIG_WORKSPACES: usize = 128;
 
-// Introduced here as the deterministic generation contract; consumed by the Task 8 planner.
-#[allow(dead_code)]
 pub(crate) const CANONICAL_OPERATIONS: [CanonicalOperation; 4] = [
     CanonicalOperation {
         key: "test",
@@ -34,7 +33,6 @@ pub(crate) const CANONICAL_OPERATIONS: [CanonicalOperation; 4] = [
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code)]
 pub(crate) struct CanonicalOperation {
     pub key: &'static str,
     pub script: &'static str,
@@ -153,6 +151,9 @@ pub fn parse_config(bytes: &[u8]) -> Result<AgentLowmemConfig, ConfigError> {
     }
 
     let operations = validate_operations(raw.operations)?;
+    if raw.workspaces.len() > MAX_CONFIG_WORKSPACES {
+        return Err(invalid_config());
+    }
     let mut workspaces = BTreeMap::new();
     let mut package_names = BTreeSet::new();
     for (key, workspace) in raw.workspaces {

@@ -69,6 +69,16 @@ impl fmt::Debug for ManagedBlock {
     }
 }
 
+impl ManagedBlock {
+    pub(crate) fn document(&self) -> &[u8] {
+        &self.document
+    }
+
+    pub(crate) fn managed_bytes(&self) -> &[u8] {
+        &self.document[self.span.clone()]
+    }
+}
+
 #[derive(Clone, PartialEq, Eq)]
 pub(crate) struct AgentsEdit {
     pub target_bytes: Vec<u8>,
