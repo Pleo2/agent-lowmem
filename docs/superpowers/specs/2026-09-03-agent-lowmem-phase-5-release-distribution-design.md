@@ -1,12 +1,12 @@
 # Agent Lowmem Phase 5 Release and Distribution Design
 
-**Date:** 2026-09-03
-**Status:** Approved in conversation; implementation plan complete
+**Date:** 2026-09-03; no-pipeline revision approved 2026-09-04
+**Status:** Approved in conversation; implementation plan requires no-pipeline revision
 **Scope:** Publish the first supported Apple Silicon release through a security-gated public repository, immutable GitHub Release, verifiable ARM64 archive, and a dedicated Homebrew tap. Establish the minimum legal, security, contribution, and community surface required for responsible public maintenance.
 
 ## 1. Objective
 
-Phase 5 turns the completed native runner and reversible onboarding workflow into an installable public MVP. It provides one trustworthy route from a reviewed `main` commit to a versioned binary, one-command Homebrew installation, checksum and build-provenance verification, and a small public contribution surface.
+Phase 5 turns the completed native runner and reversible onboarding workflow into an installable public MVP. It provides one trustworthy local route from a reviewed `main` commit to a versioned binary, one-command Homebrew installation, checksum verification, recorded release evidence, and a small public contribution surface.
 
 The phase remains deliberately narrow:
 
@@ -14,6 +14,7 @@ The phase remains deliberately narrow:
 - one binary archive and one checksum manifest per release;
 - no Apple signing identity, installer package, daemon, auto-updater, or crates.io publication;
 - no cross-repository release token;
+- no GitHub Actions workflow, hosted or self-hosted CI runner, paid pipeline, or artifact attestation;
 - no expansion of the GitHub inspection command or managed-runner behavior;
 - no claim that an unsigned binary is notarized or accepted by Gatekeeper without user confirmation.
 
@@ -80,7 +81,7 @@ The executable has mode `0755`; the two documents have mode `0644`. macOS metada
 
 ## 4. Repository state and public boundary
 
-The authoritative implementation repository remains `Pleo2/agent-lowmem` with default branch `main`. It is private while Phase 5 files and workflows are prepared.
+The authoritative implementation repository remains `Pleo2/agent-lowmem` with default branch `main`. It is private while Phase 5 files and local release tools are prepared.
 
 Changing visibility to public is a one-time, explicit publication transaction. It may occur only after all pre-publication gates in section 10 pass against the exact remote `main` commit intended for `v0.1.0`. The visibility command names `Pleo2/agent-lowmem` explicitly and acknowledges GitHub's visibility-change consequence flag. No wildcard repository operation is allowed.
 
@@ -91,7 +92,7 @@ Before the visibility change, the implementation records:
 - all reachable refs included in the secret scan;
 - no submodule, Git LFS pointer, private attachment, local environment file, credential, token, key, customer data, or absolute user path in tracked content or release assets;
 - the repository's public description and homepage;
-- an explicit list of the files and workflow permissions being published.
+- an explicit list of the files and repository settings being published.
 
 If a suspected secret is found, publication stops. Redaction from the current tree alone is insufficient: the reachable history must be rewritten safely or the secret must be revoked, the corrected history rescanned, and the user must approve the new publication boundary.
 
@@ -99,17 +100,16 @@ After visibility becomes public and before the first tag is pushed:
 
 - GitHub private vulnerability reporting is enabled;
 - release immutability is enabled;
-- Actions remain enabled;
-- workflows use least-privilege job permissions;
-- third-party actions are absent from the release path;
-- GitHub-owned actions are pinned to reviewed full commit SHAs, not floating tags;
-- the workflow files at the release commit are reviewed from the exact tag target.
+- GitHub Actions is disabled for the repository;
+- no file exists below `.github/workflows/`;
+- no external CI, self-hosted runner, release bot, or paid pipeline is introduced;
+- all release validation runs locally on the maintainer's Apple Silicon Mac.
 
 ## 5. Community and governance surface
 
 The public repository contains these top-level documents:
 
-- `README.md`: product purpose, constraints, supported platform, installation, checksum and attestation verification, unsigned/notarized status, commands, uninstall, development, support, license, and contribution links;
+- `README.md`: product purpose, constraints, supported platform, installation, checksum verification, unsigned/notarized status, commands, uninstall, development, support, license, and contribution links;
 - `LICENSE.md`: authoritative FSL-1.1-MIT license;
 - `COMMERCIAL.md`: plain-language competing-use and alternative-license guidance;
 - `CHANGELOG.md`: Keep a Changelog structure with a `0.1.0` entry and comparison-ready headings;
@@ -149,68 +149,43 @@ Labels are applied idempotently through authenticated GitHub CLI calls after the
 
 Maintainer response times are goals, not service-level guarantees: acknowledge ordinary issues within seven calendar days and provide a first substantive PR review within fourteen calendar days. Security reports follow `SECURITY.md`. External contributors are named in the relevant changelog entry and generated release notes; recognition never exposes private report identities without consent.
 
-## 6. CI architecture
+## 6. Local validation architecture
 
-`.github/workflows/ci.yml` runs for pull requests and pushes to `main` on the standard GitHub-hosted `macos-14` ARM64 runner. It has a twenty-minute timeout, one job, concurrency cancellation for superseded branch runs, and `contents: read` as its only repository permission.
+`scripts/check-release.sh` is the single local validation entry point for the MVP. It runs on the maintainer's supported Apple Silicon Mac, records non-secret host and tool versions, and invokes every gate sequentially with no background process, daemon, cache service, or networked build executor.
 
-The job runs sequentially:
+The script fails before packaging when any command fails and runs, in order:
 
-1. check out the exact commit with the GitHub-owned checkout action pinned to a reviewed full SHA;
-2. resolve the repository-pinned `rust-toolchain.toml` toolchain;
-3. print `rustc`, Cargo, architecture, and macOS versions as non-secret evidence;
-4. run `cargo fmt --all -- --check`;
-5. run `cargo clippy --all-targets -j 1 -- -D warnings`;
-6. run `cargo test -j 1 -- --test-threads=1`;
-7. build with `cargo build --release --locked -j 1`;
-8. run the release binary's `--version` and `doctor` smoke checks.
+1. repository, version, and architecture preflight;
+2. `cargo fmt --all -- --check`;
+3. `cargo clippy --all-targets -j 1 -- -D warnings`;
+4. `cargo test -j 1 -- --test-threads=1`;
+5. the explicit ignored release-only gates under `--release`;
+6. dependency-license and RustSec audits from checksum-verified local tools;
+7. `cargo build --release --locked -j 1`;
+8. binary architecture, size, `--version`, and `doctor` smoke checks;
+9. deterministic packaging and checksum verification.
 
-CI uses no cache action in v0.1.0. Avoiding cache state keeps the first workflow easier to audit and prevents a cache service from becoming part of the release trust model. CI does not publish, mutate repository settings, update the tap, or start background services.
+The script writes a bounded, redacted evidence file outside tracked paths. It never pushes, tags, changes repository settings, creates a GitHub release, or updates the Homebrew tap.
 
-## 7. Release workflow
+## 7. Local release procedure
 
-`.github/workflows/release.yml` triggers only for tags matching `v*.*.*`. It runs one ARM64 macOS job with a thirty-minute timeout and a release concurrency key that never cancels an active release.
+The maintainer executes the local validation entry point against a clean `main` that exactly matches `origin/main`. After reviewing its evidence and artifact inventory, the maintainer creates an annotated `vX.Y.Z` tag whose version matches `Cargo.toml`, pushes only that tag, and re-verifies the remote tag target.
 
-The workflow permissions are exactly:
+The draft release is then created explicitly with the authenticated GitHub CLI using `gh release create --draft --verify-tag --generate-notes`. Exactly the versioned ARM64 archive and `SHA256SUMS` are uploaded. No script automatically publishes the draft, changes visibility, modifies repository settings, or mutates the Homebrew tap.
 
-```yaml
-contents: write
-id-token: write
-attestations: write
-```
-
-The workflow:
-
-1. checks out the exact tag commit with the pinned GitHub-owned checkout action;
-2. rejects tags that do not exactly match `v[0-9]+\.[0-9]+\.[0-9]+`;
-3. verifies the tag version equals `package.version` in `Cargo.toml`;
-4. fetches `origin/main` and verifies the tagged commit is reachable from it;
-5. refuses an existing release or duplicate asset identity;
-6. repeats formatting, Clippy, sequential tests, locked release build, ignored release-only resource gates, schema tests, dependency-license audit, and RustSec audit;
-7. verifies the runner and binary architectures are `arm64`;
-8. stages only the binary, `LICENSE.md`, and `README.md` with exact modes;
-9. creates the versioned archive with macOS copyfile metadata disabled;
-10. creates and verifies `SHA256SUMS` locally;
-11. generates GitHub artifact attestations for the archive and checksum manifest with the pinned GitHub-owned attestation action;
-12. creates a draft GitHub Release from the existing annotated tag with generated notes;
-13. uploads the archive and checksum manifest exactly once;
-14. leaves the release as a draft and prints its URL for human verification.
-
-The workflow never publishes the draft automatically. A human verifies filenames, checksums, attestation presence, release notes, unsigned-language disclosure, and Homebrew formula inputs before publishing the immutable release.
-
-Any failed validation exits before release creation. A failure after draft creation leaves an identifiable draft that may be deleted and rebuilt before publication. Published immutable assets are never replaced; a defect requires a new patch version.
+A human verifies filenames, checksums, release notes, unsigned-language disclosure, tag identity, and Homebrew formula inputs before publishing the immutable release. A failure before draft creation leaves no remote release. A failed draft may be deleted and rebuilt before publication. Published immutable assets are never replaced; a defect requires a new patch version.
 
 ## 8. Release integrity and verification
 
-The release page and README provide two independent verification paths:
+The release page and README provide checksum verification:
 
 ```sh
 shasum -a 256 -c SHA256SUMS
-gh attestation verify agent-lowmem-v0.1.0-aarch64-apple-darwin.tar.gz --repo Pleo2/agent-lowmem
 ```
 
-Checksums detect accidental or untrusted-mirror modification. GitHub attestations bind the artifact to the repository, workflow, commit, and triggering event. Neither mechanism asserts that the code is vulnerability-free, Apple-signed, or notarized.
+Checksums detect accidental or untrusted-mirror modification when the manifest is obtained from the immutable GitHub Release. The release also records the exact source tag and locally audited commit. The MVP does not claim cryptographic build provenance or independent reproducibility: it has no GitHub artifact attestation, Apple signature, or notarization, and the checksum does not assert that the code is vulnerability-free.
 
-The unsigned disclosure is adjacent to every manual installation route. Documentation never recommends globally disabling Gatekeeper, running `sudo spctl --master-disable`, or piping a remote script into a shell. If macOS blocks execution, the user is directed to verify the checksum and provenance first, then use the narrow system-provided confirmation flow for that binary.
+The unsigned disclosure is adjacent to every manual installation route. Documentation never recommends globally disabling Gatekeeper, running `sudo spctl --master-disable`, or piping a remote script into a shell. If macOS blocks execution, the user is directed to verify the checksum and release-tag identity first, then use the narrow system-provided confirmation flow for that binary.
 
 ## 9. Homebrew distribution
 
@@ -248,7 +223,7 @@ No personal access token, deploy key, GitHub App, formula-update action, or cros
 
 ## 10. Pre-publication and release gates
 
-Every gate is fail-closed and runs sequentially on the reference Mac unless identified as GitHub-hosted evidence.
+Every gate is fail-closed and runs sequentially on the reference Mac. No validation gate depends on a hosted pipeline.
 
 ### 10.1 Repository safety
 
@@ -272,13 +247,12 @@ Every gate is fail-closed and runs sequentially on the reference Mac unless iden
 
 ### 10.3 Artifact quality
 
-- the binary and runner are ARM64;
+- the reference Mac and binary are ARM64;
 - release binary remains at most 12 MiB;
 - parent RSS remains at most 24 MiB on retained managed-run fixtures;
 - the archive has the exact name, members, modes, and no extended metadata;
 - archive checksum generation and verification pass;
 - `--version` and `doctor` smoke checks pass from the extracted archive;
-- GitHub attestation verification passes after the artifact is uploaded;
 - a clean Homebrew install, test, and uninstall pass from the public tap.
 
 ### 10.4 Public repository readiness
@@ -299,7 +273,7 @@ Agent Lowmem follows Semantic Versioning. During `0.x`, public CLI grammars and 
 
 Only the newest released version receives security fixes during the MVP. `SECURITY.md` states this explicitly. There is no in-process update checker, background network request, telemetry event, or self-update command.
 
-After the first release, repository work moves from direct `main` commits to Conventional Commit branches and pull requests with required CI. The branch policy requires the CI check and blocks force pushes and branch deletion. It does not require an approving review while the repository has one maintainer, avoiding a self-deadlock. Release tags remain maintainer-only.
+After the first release, repository work moves from direct `main` commits to Conventional Commit branches and pull requests. The branch policy blocks force pushes and branch deletion but requires no pipeline status or approving review while the repository has one maintainer, avoiding a self-deadlock. The maintainer runs the documented local checks before merging. Release tags remain maintainer-only.
 
 ## 12. Failure and rollback model
 
@@ -320,7 +294,7 @@ Phase 5 does not add:
 - Apple Developer ID signing, hardened-runtime signing, notarization, `.pkg`, `.dmg`, or App Store distribution;
 - crates.io, npm, MacPorts, Nix, Docker, or a remote install script;
 - automatic Homebrew tap mutation or cross-repository credentials;
-- a self-hosted GitHub Actions runner;
+- GitHub Actions workflows, hosted CI, a self-hosted runner, external pipelines, or artifact attestations;
 - cache services, SBOM generators, release orchestration frameworks, semantic-release bots, CLA bots, or dependency update bots;
 - telemetry, analytics, update checks, daemons, privileged helpers, or `sudo`;
 - GitHub Offload implementation or changes to `agent-lowmem github inspect`;
@@ -333,14 +307,14 @@ Phase 5 is complete only when all of the following are observed:
 1. `Cargo.toml`, `LICENSE.md`, `COMMERCIAL.md`, and release metadata consistently identify Jose Leonardo Moreno, Pleo2, and `FSL-1.1-MIT`.
 2. `agent-lowmem --version` and `-V` print the exact package version with zero writes, zero children, empty stderr, and no ANSI.
 3. README, changelog, contributing, security, conduct, roadmap, issue, PR, release-note, ownership, and label contracts pass content tests or deterministic inspection.
-4. CI passes on an ARM64 `macos-14` GitHub-hosted runner with sequential format, lint, test, build, and smoke gates.
+4. The local release checker passes on the supported ARM64 reference Mac with sequential format, lint, test, build, audit, package, and smoke gates.
 5. The complete reachable Git history and tracked publication set pass the redacted pre-publication audit, and the audit records only findings status rather than secret candidates.
 6. `Pleo2/agent-lowmem` becomes public only after the exact audited `main` commit is synchronized and clean.
 7. Private vulnerability reporting and release immutability are enabled before the first tag.
 8. The annotated tag `v0.1.0` points to the reviewed release commit and matches Cargo version `0.1.0`.
-9. The release workflow produces the exact ARM64 archive and checksum manifest, passes retained resource and dependency gates, and creates a draft rather than auto-publishing.
+9. The local release procedure produces the exact ARM64 archive and checksum manifest, passes retained resource and dependency gates, and creates a draft only through a separate explicit maintainer command.
 10. The archive contains exactly the binary, license, and README with correct modes and no macOS metadata; its SHA-256 verifies locally.
-11. GitHub artifact attestation verification binds the archive to `Pleo2/agent-lowmem` and the reviewed release workflow.
+11. The published checksum, archive digest, annotated tag, release tag, and recorded audited commit agree exactly.
 12. Human review publishes an immutable `v0.1.0` release without replacing assets or moving the tag.
 13. `Pleo2/homebrew-agent-lowmem` is public and contains a reviewed formula for the immutable release URL and digest.
 14. Homebrew style, audit, clean install, formula test, `doctor` smoke test, and uninstall pass on Apple Silicon.
@@ -357,9 +331,9 @@ Stop the current task and resolve the relevant boundary before continuing if any
 - repository visibility changes before the pre-publication gates pass;
 - the license identifier, official text, copyright holder, competing-use summary, Cargo metadata, or formula disagree;
 - the release tag and Cargo version differ, the tag commit is not reachable from `main`, or a release/tag identity already exists;
-- a workflow uses an unpinned action, unexpected permission, third-party release action, self-hosted runner, cache, or cross-repository secret;
-- the runner or binary is not ARM64, an artifact contains extra files or metadata, or a resource/dependency gate regresses;
-- the release becomes public before checksum, attestation, notes, unsigned disclosure, and asset inventory are verified;
+- a GitHub Actions workflow, external pipeline, self-hosted runner, release bot, or cross-repository secret appears;
+- the reference Mac or binary is not ARM64, an artifact contains extra files or metadata, or a resource/dependency gate regresses;
+- the release becomes public before checksum, tag identity, notes, unsigned disclosure, and asset inventory are verified;
 - release immutability or private vulnerability reporting cannot be enabled;
 - the Homebrew formula points to a mutable URL, wrong digest, missing release, different license, or unsupported platform;
 - publication would require disabling Gatekeeper globally, using `sudo`, piping remote code into a shell, or claiming Apple trust that does not exist;
@@ -371,9 +345,7 @@ Stop the current task and resolve the relevant boundary before continuing if any
 - SPDX identifier and canonical text: `https://spdx.org/licenses/FSL-1.1-MIT.html`
 - Open Source Definition: `https://opensource.org/osd`
 - Apple Developer ID requirements: `https://developer.apple.com/support/developer-id/`
-- GitHub-hosted runner reference: `https://docs.github.com/en/actions/reference/runners/github-hosted-runners`
 - GitHub immutable releases: `https://docs.github.com/en/code-security/concepts/supply-chain-security/immutable-releases`
-- GitHub artifact attestations: `https://docs.github.com/en/actions/concepts/security/artifact-attestations`
 - Homebrew tap guidance: `https://docs.brew.sh/How-to-Create-and-Maintain-a-Tap`
 - Homebrew Formula Cookbook: `https://docs.brew.sh/Formula-Cookbook`
 - Developer Certificate of Origin 1.1: `https://developercertificate.org/`
