@@ -1,0 +1,35 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    runs-on: macos-14
+    timeout-minutes: 20
+    steps:
+      - name: Check out the exact revision
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+      - name: Record toolchain and host
+        run: rustc --version && cargo --version && uname -m && sw_vers -productVersion
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+      - name: Lint every target
+        run: cargo clippy --all-targets -j 1 -- -D warnings
+      - name: Run tests sequentially
+        run: cargo test -j 1 -- --test-threads=1
+      - name: Build the locked release
+        run: cargo build --release --locked -j 1
+      - name: Smoke test the binary
+        run: |
+          test "$(target/release/agent-lowmem --version)" = "agent-lowmem 0.1.0"
+          target/release/agent-lowmem doctor
