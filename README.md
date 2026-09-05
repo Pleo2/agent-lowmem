@@ -32,6 +32,8 @@ The Homebrew package uses the same unsigned and not notarized binary published i
 
 ## Current commands
 
+New here? Follow the [10-minute end-to-end test](docs/quickstart.md) in a disposable project before adopting a real repository.
+
 ```sh
 agent-lowmem doctor
 agent-lowmem --version
