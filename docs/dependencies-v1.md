@@ -211,3 +211,17 @@ scripts/audit-publication.sh /path/to/checksum-verified/gitleaks /external/publi
 ```
 
 This is release-candidate evidence, not proof of public repository state, a published GitHub Release, or Homebrew availability. Those claims require fresh remote verification after each corresponding mutation.
+
+## Phase 5 Public Repository Readiness — 2026-09-05
+
+| Field | Observed remote state |
+| --- | --- |
+| Verification time | `2026-09-05T15:16:51Z` |
+| Repository | Anonymous GitHub API returned `https://github.com/Pleo2/agent-lowmem`, `visibility=public`, and `private=false` |
+| GitHub Actions | Repository Actions API returned `enabled=false` |
+| Vulnerability reporting | Repository private-vulnerability-reporting API returned `enabled=true` |
+| Release integrity | Repository immutable-releases API returned `enabled=true`; the setting is repository-owned rather than account-enforced |
+| Canonical labels | `bug`, `enhancement`, `documentation`, `security`, `good first issue`, `help wanted`, `performance`, `macos`, `blocked`, and `release` match `.github/labels.yml` |
+| Existing labels | Unrelated default labels were preserved |
+
+No release tag or GitHub Release existed when this boundary was established. Publishing remains blocked on fresh local release and all-ref publication audits of the synchronized documentation commit.
