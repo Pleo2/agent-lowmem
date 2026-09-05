@@ -1,3 +1,4 @@
 /artifacts/pressure-probe/raw/*.jsonl
+/dist/
 /.worktrees/
 /target/
