@@ -192,14 +192,14 @@ This integration is opt-in and has no effect on `doctor`, managed runs, managed 
 | Field | Evidence |
 | --- | --- |
 | Host and toolchain | macOS `26.6.2` on `arm64`; Rust `1.85.0`; Cargo `1.85.0`; cargo-audit `0.22.2`; Gitleaks `8.18.4` |
-| Audited implementation commit | `87699cd89ffad00f73923d2a6e7b33def5431e20` |
+| Audited release-candidate commit | `f5885e6506a71adf8731de4f3d1237cc2ea06c71`; its evidence-only successor must pass the same external gates before publication |
 | Tests | `303` active tests passed sequentially; all `5` ignored release-only tests passed separately |
 | Dependency and advisory gate | `56` locked packages; `55` external package licenses accepted; RustSec loaded `1239` advisories and reported no vulnerability, warning, or yanked-crate finding |
-| Publication boundary | `92` commits, `8` refs, and `710` reachable object paths; full Git fsck, non-shallow history, no submodule, LFS pointer, prohibited filename, or Gitleaks finding |
+| Publication boundary | `93` commits, `8` refs, and `716` reachable object paths; full Git fsck, non-shallow history, no submodule, LFS pointer, prohibited filename, or Gitleaks finding |
 | Scanner validation | The official Gitleaks `8.18.4` ARM64 archive matched SHA-256 `a480d8593acd8215b22402cf0f3f88b01dcd3610c63b5391db640f7767e62104`; its detection canary passed before the all-ref scan |
 | Rejected scanner | Gitleaks `8.30.1` and `8.30.0` were not trusted because their official ARM64 binaries failed the same detection canary |
 | Release binary | `1250064` bytes; native `arm64`; exact output `agent-lowmem 0.1.0`; doctor smoke passed |
-| Release archive | `agent-lowmem-v0.1.0-aarch64-apple-darwin.tar.gz`; `614206` bytes; SHA-256 `8493f3c2d1c66c185c6b99fb05bd2d2639a1ecd00fff052c4b7d2954c053e907` |
+| Release archive | `agent-lowmem-v0.1.0-aarch64-apple-darwin.tar.gz`; `614215` bytes; SHA-256 `743de985d42ada35e97915fc32d252a48394ec49094e030eb3c031130345df21` |
 | Archive contract | Exact members `agent-lowmem`, `LICENSE.md`, and `README.md`; modes `0755`, `0644`, and `0644`; checksum verification passed; repeated packaging was byte-identical |
 | External evidence | `agent-lowmem-v0.1.0-local-release-evidence-2026-09-05.txt` and `agent-lowmem-v0.1.0-publication-audit-2026-09-05.txt`, both mode `0600` outside the repository |
 
