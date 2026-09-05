@@ -8,7 +8,7 @@
 
 Agent Lowmem is a native Rust policy runner for predictable agent-launched validation on memory-constrained Apple Silicon Macs. It serializes heavy work, denies watch and background modes, supervises owned process groups, and keeps adoption reversible.
 
-> Agent Lowmem is in early development. There is no supported public release or active Homebrew installation path yet.
+> Agent Lowmem is a locally verified `v0.1.0` release candidate. The repository, GitHub Release, and Homebrew installation path are not public yet.
 
 The first release targets ARM64 Apple Silicon Macs running macOS 14 or newer. The binary will not be signed or notarized until an Apple Developer ID is available.
 
