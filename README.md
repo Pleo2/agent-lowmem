@@ -30,6 +30,39 @@ brew uninstall Pleo2/agent-lowmem/agent-lowmem
 
 The Homebrew package uses the same unsigned and not notarized binary published in the immutable GitHub Release. Homebrew verifies its pinned SHA-256 before installation. Never disable Gatekeeper globally.
 
+## Install with Codex
+
+Open the JavaScript or TypeScript repository you want to inspect in Codex, then paste this prompt:
+
+```text
+Install and safely configure Agent Lowmem for the repository currently open in Codex.
+
+Context:
+- Agent Lowmem is a native Rust policy runner for memory-constrained Apple Silicon Macs.
+- It keeps agent-launched JavaScript and TypeScript validation predictable by allowing only reviewed operations, serializing heavy work, applying bounded concurrency arguments, supervising the child process group, and making repository adoption reversible.
+- The v0.1.0 MVP supports ARM64 Apple Silicon, macOS 14 or newer, and recognized npm or pnpm projects.
+
+Safety rules:
+- Do not use sudo and never disable Gatekeeper globally.
+- Do not change package-manager versions, dependencies, lockfiles, or package scripts merely to make the repository compatible.
+- Do not overwrite unrelated work or discard existing changes.
+- Do not run tests, builds, commits, pushes, or destructive cleanup as part of installation.
+- Run one command at a time and stop on conflicts, unsupported versions, or ambiguous repository state.
+
+Procedure:
+1. Read https://github.com/Pleo2/agent-lowmem and its docs/quickstart.md before acting.
+2. Check `uname -m`, `sw_vers -productVersion`, `brew --version`, the repository root, and `git status --short`. If this is not a supported Mac or not a Git repository, explain why and stop without changing the project.
+3. If `agent-lowmem` is not installed, run `brew install Pleo2/agent-lowmem/agent-lowmem`. If it is already installed, do not reinstall or upgrade it automatically.
+4. Run `agent-lowmem --version`. The expected release is `agent-lowmem 0.1.0`. If a different version is present, report it and stop.
+5. From the repository root, run `agent-lowmem doctor --json` and explain the compatibility result in plain language.
+6. If doctor reports that init is available, run `agent-lowmem init --dry-run`. Show what Agent Lowmem proposes to manage and confirm that no unrelated file would be overwritten.
+7. If the dry run is supported and conflict-free, run `agent-lowmem init`. Otherwise stop without forcing adoption.
+8. Show the final `git status --short`, the generated operation keys in `.agent-lowmem.json`, and the Agent Lowmem block in `AGENTS.md`.
+9. Finish with a concise report: installed version, compatibility, files changed, available operation keys, and the exact `agent-lowmem run <key>` commands I can choose to execute later. Mention `agent-lowmem restore --dry-run` as the safe first step for removal.
+```
+
+The prompt installs and adopts Agent Lowmem, but deliberately leaves heavy validation under your control. For a disposable end-to-end exercise first, use the [10-minute quickstart](docs/quickstart.md).
+
 ## Current commands
 
 New here? Follow the [10-minute end-to-end test](docs/quickstart.md) in a disposable project before adopting a real repository.
