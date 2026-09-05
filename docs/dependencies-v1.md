@@ -225,3 +225,18 @@ This is release-candidate evidence, not proof of public repository state, a publ
 | Existing labels | Unrelated default labels were preserved |
 
 No release tag or GitHub Release existed when this boundary was established. Publishing remains blocked on fresh local release and all-ref publication audits of the synchronized documentation commit.
+
+## Phase 5 v0.1.0 Publication — 2026-09-05
+
+| Field | Observed result |
+| --- | --- |
+| Release commit | Annotated tag `v0.1.0` resolves locally and remotely to `91db442c6c8417f9827afdad7ed339adf574699f` |
+| Publication | GitHub reports `publishedAt=2026-09-05T15:19:03Z`, `draft=false`, `prerelease=false`, `latest=v0.1.0`, and `immutable=true` |
+| Release URL | `https://github.com/Pleo2/agent-lowmem/releases/tag/v0.1.0` |
+| Archive asset | `agent-lowmem-v0.1.0-aarch64-apple-darwin.tar.gz`; `614215` bytes; GitHub digest and anonymous download both verified SHA-256 `743de985d42ada35e97915fc32d252a48394ec49094e030eb3c031130345df21` |
+| Checksum asset | `SHA256SUMS`; `114` bytes; GitHub digest `2d4bab31b20ac09956a30ad3ab966ad2141f4c32cf9fb7ca165fd6a70a262415` |
+| Independent draft gate | Downloaded both draft assets, verified checksum, exact three-member inventory and modes, `agent-lowmem 0.1.0`, successful doctor, draft state, and exact tag target before publication |
+| Independent public gate | Downloaded both assets anonymously from the versioned public URLs and reverified the checksum after publication |
+| Disclosure | Release notes explicitly state Apple Silicon/macOS 14 support and that the binary is unsigned and not notarized |
+
+The release is immutable. Its tag and asset bytes must never be moved, replaced, or reused.
