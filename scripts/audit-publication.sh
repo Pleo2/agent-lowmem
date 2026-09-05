@@ -74,7 +74,7 @@ canary_status=$?
 set -e
 [ "$canary_status" -eq 1 ] || fail "secret scanner failed its detection self-test"
 
-if ! "$gitleaks" git --redact --no-banner --exit-code 1 --log-opts=--all . > /dev/null 2>"$scanner_log"; then
+if ! "$gitleaks" detect --source . --redact --no-banner --exit-code 1 --log-opts=--all > /dev/null 2>"$scanner_log"; then
   fail "secret scanner reported a finding or execution failure"
 fi
 

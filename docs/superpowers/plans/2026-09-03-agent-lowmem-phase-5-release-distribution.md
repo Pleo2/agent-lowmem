@@ -158,11 +158,11 @@ Download the official `cargo-audit-aarch64-apple-darwin-v0.22.2.tgz` into `mktem
 
 - [ ] **Step 1: Write failing publication-audit tests**
 
-Use isolated Git repositories to assert refusal of missing/extra arguments, missing/non-executable scanner, evidence inside the repository, dirty worktree, local/remote divergence, shallow repositories, submodules, Git LFS pointers, suspicious tracked filenames, corrupt Git objects, a scanner that cannot detect the built-in canary, and a scanner finding. Assert the real scanner command uses Git mode with redaction and all refs; assert evidence contains counts/status only and no candidate values or absolute paths.
+Use isolated Git repositories to assert refusal of missing/extra arguments, missing/non-executable scanner, evidence inside the repository, dirty worktree, local/remote divergence, shallow repositories, submodules, Git LFS pointers, suspicious tracked filenames, corrupt Git objects, a scanner that cannot detect the built-in canary, and a scanner finding. Assert the real scanner command uses the version-compatible `detect` Git-history mode with redaction and all refs; assert evidence contains counts/status only and no candidate values or absolute paths.
 
 - [ ] **Step 2: Confirm RED and implement**
 
-Run `cargo test --test publication_audit -j 1 -- --test-threads=1`, then implement POSIX `set -eu` checks using `git status --porcelain=v1 --untracked-files=all`, `git fsck --full`, `git rev-list --all`, `git ls-files`, `.gitmodules`, LFS pointer signatures, and a closed suspicious-filename grammar. Before trusting a clean result, require Gitleaks to detect a runtime-assembled synthetic GitHub token and return its finding exit code without exposing the candidate. Invoke the repository scan with `git --redact --no-banner --exit-code 1 --log-opts=--all`. Write external evidence atomically with mode `0600` and status/counts only.
+Run `cargo test --test publication_audit -j 1 -- --test-threads=1`, then implement POSIX `set -eu` checks using `git status --porcelain=v1 --untracked-files=all`, `git fsck --full`, `git rev-list --all`, `git ls-files`, `.gitmodules`, LFS pointer signatures, and a closed suspicious-filename grammar. Before trusting a clean result, require Gitleaks to detect a runtime-assembled synthetic GitHub token and return its finding exit code without exposing the candidate. Invoke the repository scan with `detect --source . --redact --no-banner --exit-code 1 --log-opts=--all`. Write external evidence atomically with mode `0600` and status/counts only.
 
 - [ ] **Step 3: Run the real all-ref scan**
 

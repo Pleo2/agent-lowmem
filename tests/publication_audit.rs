@@ -251,7 +251,7 @@ fn invokes_gitleaks_for_all_refs_and_writes_only_bounded_evidence() {
     let invocation = fs::read_to_string(&fixture.invocation).unwrap();
     assert_eq!(
         invocation,
-        "git\n--redact\n--no-banner\n--exit-code\n1\n--log-opts=--all\n.\n"
+        "detect\n--source\n.\n--redact\n--no-banner\n--exit-code\n1\n--log-opts=--all\n"
     );
     let evidence = fs::read_to_string(&fixture.evidence).unwrap();
     assert!(evidence.contains("schema=agent-lowmem-publication-audit-v1\n"));
