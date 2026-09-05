@@ -6,7 +6,7 @@
 
 **Architecture:** Build, test, audit, and package sequentially on the maintainer's ARM64 Mac. Keep deterministic packaging, release validation, and publication auditing in three focused POSIX scripts; keep all visibility, tagging, draft creation, publication, and tap mutations as explicit maintainer commands after fail-closed local gates. The implementation repository and Homebrew tap remain separate and use no cross-repository credential.
 
-**Tech Stack:** Rust 1.85.0, Cargo, POSIX shell on macOS, GitHub CLI, Gitleaks 8.30.1, cargo-audit 0.22.2, Homebrew formulae, FSL-1.1-MIT.
+**Tech Stack:** Rust 1.85.0, Cargo, POSIX shell on macOS, GitHub CLI, Gitleaks 8.18.4 with a mandatory detection canary, cargo-audit 0.22.2, Homebrew formulae, FSL-1.1-MIT.
 
 **Spec:** `docs/superpowers/specs/2026-09-03-agent-lowmem-phase-5-release-distribution-design.md`
 
@@ -158,15 +158,15 @@ Download the official `cargo-audit-aarch64-apple-darwin-v0.22.2.tgz` into `mktem
 
 - [ ] **Step 1: Write failing publication-audit tests**
 
-Use isolated Git repositories to assert refusal of missing/extra arguments, missing/non-executable scanner, evidence inside the repository, dirty worktree, local/remote divergence, shallow repositories, submodules, Git LFS pointers, suspicious tracked filenames, corrupt Git objects, and a scanner finding. Assert the real scanner command uses Git mode with redaction and all refs; assert evidence contains counts/status only and no candidate values or absolute paths.
+Use isolated Git repositories to assert refusal of missing/extra arguments, missing/non-executable scanner, evidence inside the repository, dirty worktree, local/remote divergence, shallow repositories, submodules, Git LFS pointers, suspicious tracked filenames, corrupt Git objects, a scanner that cannot detect the built-in canary, and a scanner finding. Assert the real scanner command uses Git mode with redaction and all refs; assert evidence contains counts/status only and no candidate values or absolute paths.
 
 - [ ] **Step 2: Confirm RED and implement**
 
-Run `cargo test --test publication_audit -j 1 -- --test-threads=1`, then implement POSIX `set -eu` checks using `git status --porcelain=v1 --untracked-files=all`, `git fsck --full`, `git rev-list --all`, `git ls-files`, `.gitmodules`, LFS pointer signatures, and a closed suspicious-filename grammar. Invoke Gitleaks with `git --redact --no-banner --exit-code 1 --log-opts=--all`. Write external evidence atomically with mode `0600` and status/counts only.
+Run `cargo test --test publication_audit -j 1 -- --test-threads=1`, then implement POSIX `set -eu` checks using `git status --porcelain=v1 --untracked-files=all`, `git fsck --full`, `git rev-list --all`, `git ls-files`, `.gitmodules`, LFS pointer signatures, and a closed suspicious-filename grammar. Before trusting a clean result, require Gitleaks to detect a runtime-assembled synthetic GitHub token and return its finding exit code without exposing the candidate. Invoke the repository scan with `git --redact --no-banner --exit-code 1 --log-opts=--all`. Write external evidence atomically with mode `0600` and status/counts only.
 
 - [ ] **Step 3: Run the real all-ref scan**
 
-Download Gitleaks `v8.30.1` ARM64 and its checksum list to `mktemp -d`, require archive SHA-256 `b40ab0ae55c505963e365f271a8d3846efbc170aa17f2607f13df610a9aeb6a5`, extract it, and run the audit against all refs. Stop on any finding and report only category/location, never the candidate. Move the temporary tool directory to Trash after use.
+Download Gitleaks `v8.18.4` ARM64 and its checksum list to `mktemp -d`, require archive SHA-256 `a480d8593acd8215b22402cf0f3f88b01dcd3610c63b5391db640f7767e62104`, extract it, and run the audit against all refs. This replaces the originally selected `v8.30.1`, whose official ARM64 binary failed the required detection canary. Stop on any finding and report only category/location, never the candidate. Move the temporary tool directory to Trash after use.
 
 - [ ] **Step 4: Run and record complete release gates**
 
