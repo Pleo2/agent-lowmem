@@ -8,9 +8,27 @@
 
 Agent Lowmem is a native Rust policy runner for predictable agent-launched validation on memory-constrained Apple Silicon Macs. It serializes heavy work, denies watch and background modes, supervises owned process groups, and keeps adoption reversible.
 
-> Agent Lowmem is a locally verified `v0.1.0` release candidate. The repository, GitHub Release, and Homebrew installation path are not public yet.
+> Agent Lowmem `v0.1.0` is available for ARM64 Apple Silicon Macs running macOS 14 or newer.
 
-The first release targets ARM64 Apple Silicon Macs running macOS 14 or newer. The binary will not be signed or notarized until an Apple Developer ID is available.
+The first release is not signed or notarized because an Apple Developer ID is not available.
+
+## Install with Homebrew
+
+Install the fully qualified formula so Homebrew trusts only Agent Lowmem from the Pleo2 tap:
+
+```sh
+brew install Pleo2/agent-lowmem/agent-lowmem
+```
+
+Upgrade or uninstall it with:
+
+```sh
+brew update
+brew upgrade Pleo2/agent-lowmem/agent-lowmem
+brew uninstall Pleo2/agent-lowmem/agent-lowmem
+```
+
+The Homebrew package uses the same unsigned and not notarized binary published in the immutable GitHub Release. Homebrew verifies its pinned SHA-256 before installation. Never disable Gatekeeper globally.
 
 ## Current commands
 
@@ -61,7 +79,7 @@ The production Rust package is at the repository root. The Swift package under `
 
 ## Release verification
 
-Release archives will be published with `SHA256SUMS`. After downloading both files from the GitHub release, verify the archive before extracting it:
+Release archives are published with `SHA256SUMS`. After downloading both files from the GitHub release, verify the archive before extracting it:
 
 ```sh
 shasum -a 256 -c SHA256SUMS

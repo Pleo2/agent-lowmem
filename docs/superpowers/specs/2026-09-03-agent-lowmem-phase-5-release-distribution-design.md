@@ -1,7 +1,7 @@
 # Agent Lowmem Phase 5 Release and Distribution Design
 
 **Date:** 2026-09-03; no-pipeline revision approved 2026-09-04
-**Status:** Implemented locally; publication gates pending
+**Status:** Released as v0.1.0
 **Scope:** Publish the first supported Apple Silicon release through a security-gated public repository, immutable GitHub Release, verifiable ARM64 archive, and a dedicated Homebrew tap. Establish the minimum legal, security, contribution, and community surface required for responsible public maintenance.
 
 ## 1. Objective

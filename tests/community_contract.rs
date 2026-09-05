@@ -51,7 +51,7 @@ fn public_documents_share_the_release_and_licensing_contract() {
     assert!(!all_documents.contains("spctl --master-disable"));
     assert!(!all_documents.contains("curl | sh"));
     assert!(!all_documents.contains("curl -fsSL"));
-    assert!(!all_documents.contains("brew install Pleo2/agent-lowmem/agent-lowmem"));
+    assert!(all_documents.contains("brew install Pleo2/agent-lowmem/agent-lowmem"));
     assert!(!all_documents.contains("Agent Lowmem is open source"));
 }
 
@@ -76,5 +76,5 @@ fn contribution_security_and_roadmap_policies_are_explicit() {
 fn changelog_exposes_the_expected_release_headings() {
     let changelog = read_document("CHANGELOG.md");
     assert!(changelog.contains("## [Unreleased]"));
-    assert!(changelog.contains("## [0.1.0] - 2026-09-03"));
+    assert!(changelog.contains("## [0.1.0] - 2026-09-05"));
 }

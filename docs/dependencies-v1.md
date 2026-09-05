@@ -240,3 +240,16 @@ No release tag or GitHub Release existed when this boundary was established. Pub
 | Disclosure | Release notes explicitly state Apple Silicon/macOS 14 support and that the binary is unsigned and not notarized |
 
 The release is immutable. Its tag and asset bytes must never be moved, replaced, or reused.
+
+## Phase 5 Homebrew and Final Remote Policy — 2026-09-05
+
+| Field | Observed result |
+| --- | --- |
+| Verification time | `2026-09-05T15:23:52Z` |
+| Tap | Anonymous GitHub API returned public `https://github.com/Pleo2/homebrew-agent-lowmem` with default branch `main`; Actions returned `enabled=false`; zero workflow files |
+| Tap commit | `cb5b56058ed7ffd62cdea90e48dd116d6e341572` contains the two Conventional Commit checkpoints and the exact three public files `Formula/agent-lowmem.rb`, `README.md`, and `LICENSE` |
+| Formula source | Immutable `v0.1.0` archive URL with SHA-256 `743de985d42ada35e97915fc32d252a48394ec49094e030eb3c031130345df21`; upstream license `FSL-1.1-MIT`; ARM64 and macOS Sonoma requirements |
+| Homebrew validation | Homebrew `6.0.22`; style and strict audit passed; public GitHub tap install, formula test, exact version, doctor, uninstall, residual-binary check, and process check passed sequentially |
+| Main policy | Active ruleset `22340103`, `Protect main without CI`, applies exactly to `refs/heads/main` and blocks deletion and non-fast-forward updates without status checks, workflows, review requirements, or bypass actors |
+
+The supported install command is `brew install Pleo2/agent-lowmem/agent-lowmem`. No GitHub Actions, hosted pipeline, self-hosted runner, signing, notarization, Intel binary, daemon, or automatic updater was introduced.
