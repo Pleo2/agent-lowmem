@@ -1,12 +1,12 @@
-# Agent Lowmem Phase 5 Release and Distribution Implementation Plan
+# Agent Lowmem Phase 5 No-Pipeline Release Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Publish Agent Lowmem v0.1.0 as a security-gated, unsigned Apple Silicon binary with an immutable GitHub Release, public community contracts, verifiable provenance, and a manually maintained Homebrew tap.
+**Goal:** Publish Agent Lowmem v0.1.0 as an unsigned Apple Silicon binary with a locally verified archive, immutable GitHub Release, public community contracts, and a manually maintained Homebrew tap without GitHub Actions or another paid pipeline.
 
-**Architecture:** Keep runtime changes limited to a zero-side-effect version command. Put legal/community contracts in repository documents, enforce them with data-only integration tests, build on one ARM64 macOS runner, package through one deterministic local script, and leave publication behind explicit audit and human gates. The implementation repository and Homebrew tap remain separate; no cross-repository credential or automatic tap mutation is introduced.
+**Architecture:** Build, test, audit, and package sequentially on the maintainer's ARM64 Mac. Keep deterministic packaging, release validation, and publication auditing in three focused POSIX scripts; keep all visibility, tagging, draft creation, publication, and tap mutations as explicit maintainer commands after fail-closed local gates. The implementation repository and Homebrew tap remain separate and use no cross-repository credential.
 
-**Tech Stack:** Rust 1.85.0, Cargo, POSIX shell on macOS, GitHub Actions, GitHub CLI, GitHub artifact attestations, Homebrew formulae, FSL-1.1-MIT.
+**Tech Stack:** Rust 1.85.0, Cargo, POSIX shell on macOS, GitHub CLI, Gitleaks 8.30.1, cargo-audit 0.22.2, Homebrew formulae, FSL-1.1-MIT.
 
 **Spec:** `docs/superpowers/specs/2026-09-03-agent-lowmem-phase-5-release-distribution-design.md`
 
@@ -19,239 +19,42 @@
 - Keep the release unsigned and not notarized; never suggest disabling Gatekeeper globally.
 - Run Cargo work sequentially with `-j 1` and tests with `--test-threads=1`.
 - Keep the release binary at or below 12 MiB and retained parent RSS at or below 24 MiB.
-- Do not add runtime dependencies, daemons, telemetry, update checks, installers, caches, or cross-repository secrets.
+- Do not add GitHub Actions, another hosted pipeline, a self-hosted runner, artifact attestations, runtime dependencies, daemons, telemetry, update checks, installers, caches, or cross-repository secrets.
 - Do not change `agent-lowmem github inspect`, managed-runner behavior, policy semantics, or versioned JSON schemas.
-- GitHub-owned actions must use reviewed full commit SHAs: `actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803` and `actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6`.
 - Every repository commit uses Conventional Commits and is pushed atomically to `main` until `v0.1.0` is published.
-- Stop before repository visibility, tag, release publication, or tap creation if the corresponding gate is not proven.
+- Stop before visibility, tag, release publication, or tap creation if its immediately preceding gate is not proven.
+
+## File Responsibility Map
+
+- `scripts/package-release.sh`: stage exactly three files, create the ARM64 archive, create `SHA256SUMS`, and verify it.
+- `scripts/check-release.sh`: run the complete local code, dependency, resource, binary, package, and smoke gate; write bounded redacted evidence.
+- `scripts/audit-publication.sh`: inspect the complete reachable Git/ref publication boundary with a caller-supplied Gitleaks binary; write counts and pass/fail status only.
+- `tests/release_package.rs`: exercise packaging against real temporary files and inspect the resulting archive.
+- `tests/release_check.rs`: exercise strict checker argument/preflight behavior without executing a full release build.
+- `tests/publication_audit.rs`: exercise publication-audit refusal and evidence behavior in isolated Git fixtures.
+- `docs/dependencies-v1.md`: append-only local and remote release evidence.
 
 ---
 
-### Task 1: License metadata and zero-side-effect version command
+### Task 1: License metadata and zero-side-effect version command — completed
 
-**Files:**
-- Create: `LICENSE.md`
-- Create: `COMMERCIAL.md`
-- Create: `tests/version_cli.rs`
-- Modify: `Cargo.toml`
-- Modify: `src/cli.rs`
-- Modify: `src/main.rs`
+- [x] `27dc903 feat: expose release version and license` added `LICENSE.md`, `COMMERCIAL.md`, Cargo metadata, strict `--version`/`-V`, and passing tests.
 
-**Interfaces:**
-- Consumes: existing `cli::parse`, `CliCommand`, and `main::write_stdout`.
-- Produces: `CliCommand::Version`, exact stdout `agent-lowmem {CARGO_PKG_VERSION}\n`, Cargo SPDX metadata, and the authoritative FSL notice.
+### Task 2: Public documentation and maintenance contracts — completed
 
-- [ ] **Step 1: Add failing CLI tests**
+- [x] `5d39cba docs: add public project governance` added README, changelog, contributing, security, conduct, roadmap, and passing document contracts.
 
-Create `tests/version_cli.rs` with tests that run the compiled binary in an isolated empty directory, set sentinel `git`, `gh`, `node`, `npm`, and `pnpm` executables on `PATH`, and assert:
+### Task 3: GitHub community templates and canonical labels — completed
 
-```rust
-for arguments in [["--version"].as_slice(), ["-V"].as_slice()] {
-    let output = command(arguments, &fixture);
-    assert_eq!(output.status.code(), Some(0));
-    assert_eq!(output.stdout, b"agent-lowmem 0.1.0\n");
-    assert!(output.stderr.is_empty());
-}
-assert!(!fixture.child_marker.exists());
-assert_eq!(snapshot(&fixture.root), fixture.initial_snapshot);
-```
+- [x] `532220b chore: add GitHub community contracts` added issue forms, PR template, CODEOWNERS, release-note configuration, label inventory, and passing contracts.
 
-Also assert `--version --json`, `-V doctor`, `version`, and `-v` exit 2.
+### Task 4: Remove the paid-pipeline dependency — completed
 
-- [ ] **Step 2: Confirm RED**
+- [x] `ae1733b docs: redesign release without pipelines` established the local-only release design.
+- [x] `c20e641 ci: remove paid GitHub Actions pipeline` removed `.github/workflows/ci.yml` and `tests/workflow_contract.rs`.
+- [x] Verified the removal push created no workflow run and `.github/workflows/` contains no file.
 
-Run: `cargo test --test version_cli -j 1 -- --test-threads=1`
-
-Expected: accepted forms fail with the current invalid-CLI result.
-
-- [ ] **Step 3: Implement the strict version command**
-
-Add `Version` to `CliCommand`, recognize only the two single-token forms before other command matches, dispatch it before any current-directory or host inspection, and write:
-
-```rust
-fn run_version() -> i32 {
-    let output = format!("agent-lowmem {}", env!("CARGO_PKG_VERSION"));
-    if write_stdout(&output).is_ok() { 0 } else { 70 }
-}
-```
-
-Do not emit `ExitResult` on success or failure; a broken stdout returns 70 with no retry.
-
-- [ ] **Step 4: Add canonical licensing files and Cargo metadata**
-
-Set the package fields exactly:
-
-```toml
-license = "FSL-1.1-MIT"
-repository = "https://github.com/Pleo2/agent-lowmem"
-homepage = "https://agentlowmem.dev"
-description = "Native macOS resource guardrails for agentic development on low-memory Apple Silicon."
-readme = "README.md"
-publish = false
-```
-
-Create `LICENSE.md` from the canonical SPDX FSL-1.1-MIT text, replacing only the permitted notice variable with `Copyright 2026 Jose Leonardo Moreno`. Create `COMMERCIAL.md` with permitted internal-use examples, prohibited competing-use examples, `support@agentlowmem.dev`, and an explicit statement that `LICENSE.md` controls.
-
-- [ ] **Step 5: Verify and commit**
-
-Run:
-
-```bash
-cargo fmt --all -- --check
-cargo test --test version_cli -j 1 -- --test-threads=1
-cargo test cli::tests -j 1 -- --test-threads=1
-git diff --check
-```
-
-Commit:
-
-```bash
-git add Cargo.toml LICENSE.md COMMERCIAL.md src/cli.rs src/main.rs tests/version_cli.rs
-git commit -m "feat: expose release version and license"
-```
-
-Push with `git push origin main` after confirming the commit contains only the six listed paths.
-
-### Task 2: Public documentation and maintenance contracts
-
-**Files:**
-- Create: `CHANGELOG.md`
-- Create: `CONTRIBUTING.md`
-- Create: `SECURITY.md`
-- Create: `CODE_OF_CONDUCT.md`
-- Create: `ROADMAP.md`
-- Create: `tests/community_contract.rs`
-- Modify: `README.md`
-
-**Interfaces:**
-- Consumes: v0.1.0 platform, license, version, support-email, and command contracts.
-- Produces: one internally consistent public onboarding and governance surface without claiming Homebrew availability before it passes.
-
-- [ ] **Step 1: Add failing document-contract tests**
-
-Create `tests/community_contract.rs` with bounded reads and explicit assertions for all seven documents. At minimum assert exact product identity, `FSL-1.1-MIT`, `Jose Leonardo Moreno`, `support@agentlowmem.dev`, macOS 14, ARM64, unsigned/not-notarized language, DCO sign-off, seven/fourteen-day response goals, supported newest-version security policy, and the three roadmap milestones. Reject `curl ... | sh`, `spctl --master-disable`, claims of current open-source status, and an active Homebrew install claim.
-
-```rust
-assert!(read("README.md").contains("Apple Silicon"));
-assert!(read("README.md").contains("not signed or notarized"));
-assert!(read("CONTRIBUTING.md").contains("git commit -s"));
-assert!(read("SECURITY.md").contains("privately report a vulnerability"));
-assert!(!all_documents.contains("spctl --master-disable"));
-```
-
-- [ ] **Step 2: Confirm RED**
-
-Run: `cargo test --test community_contract -j 1 -- --test-threads=1`
-
-Expected: missing files fail the contract.
-
-- [ ] **Step 3: Write the public documents**
-
-Update README with manual release verification commands but retain an explicit pre-release notice and omit `brew install` until Task 10. Use Keep a Changelog headings `Unreleased` and `0.1.0 - 2026-09-03`. Use Contributor Covenant 2.1 verbatim with the enforcement address. Limit ROADMAP to:
-
-```markdown
-1. ARM64 MVP — v0.1.0 release and Homebrew tap.
-2. Trusted macOS distribution — Developer ID signing and notarization when available.
-3. GitHub Offload — optional design for moving broad validation to hosted runners.
-```
-
-- [ ] **Step 4: Verify and commit**
-
-Run the focused test, `cargo test -j 1 -- --test-threads=1`, and `git diff --check`.
-
-Commit and push:
-
-```bash
-git add README.md CHANGELOG.md CONTRIBUTING.md SECURITY.md CODE_OF_CONDUCT.md ROADMAP.md tests/community_contract.rs
-git commit -m "docs: add public project governance"
-git push origin main
-```
-
-### Task 3: GitHub community templates and canonical labels
-
-**Files:**
-- Create: `.github/ISSUE_TEMPLATE/bug.yml`
-- Create: `.github/ISSUE_TEMPLATE/feature.yml`
-- Create: `.github/ISSUE_TEMPLATE/config.yml`
-- Create: `.github/PULL_REQUEST_TEMPLATE.md`
-- Create: `.github/CODEOWNERS`
-- Create: `.github/release.yml`
-- Create: `.github/labels.yml`
-- Create: `tests/github_community.rs`
-
-**Interfaces:**
-- Consumes: support, privacy, DCO, scope, and recognition contracts from Task 2.
-- Produces: parseable GitHub forms, one PR checklist, release-note categories, ownership, and ten version-controlled label definitions.
-
-- [ ] **Step 1: Add failing template tests**
-
-Parse every YAML file as text plus a minimal indentation/key contract without adding a YAML crate. Assert bug and feature forms have non-empty `name`, `description`, `title`, `labels`, and `body`; config disables blank issues and links to `SECURITY.md`; the PR template covers scope, tests, resource impact, privacy, DCO, and docs. Assert `.github/labels.yml` defines exactly the ten spec labels with unique six-digit hex colors and non-empty descriptions.
-
-- [ ] **Step 2: Confirm RED**
-
-Run: `cargo test --test github_community -j 1 -- --test-threads=1`
-
-- [ ] **Step 3: Add templates and labels**
-
-Use issue forms rather than free-form Markdown issues. Bug prompts explicitly tell reporters to redact tokens, environment values, usernames, and absolute paths. Set:
-
-```yaml
-blank_issues_enabled: false
-contact_links:
-  - name: Private security report
-    url: https://github.com/Pleo2/agent-lowmem/security/advisories/new
-    about: Report suspected vulnerabilities privately.
-```
-
-Set CODEOWNERS to `* @Pleo2`. Release-note categories include breaking changes, features, fixes, performance, documentation, and dependencies; exclude no contributor from recognition.
-
-- [ ] **Step 4: Verify and commit**
-
-Run focused and complete sequential tests, then:
-
-```bash
-git add .github tests/github_community.rs
-git commit -m "chore: add GitHub community contracts"
-git push origin main
-```
-
-### Task 4: ARM64 continuous integration
-
-**Files:**
-- Create: `.github/workflows/ci.yml`
-- Create: `tests/workflow_contract.rs`
-
-**Interfaces:**
-- Consumes: pinned Rust toolchain and current sequential validation commands.
-- Produces: read-only `CI / validate` status on `macos-14`, with no cache or publication permission.
-
-- [ ] **Step 1: Add failing workflow-policy tests**
-
-Assert CI includes `pull_request`, push to `main`, `runs-on: macos-14`, `timeout-minutes: 20`, `contents: read`, the exact pinned checkout SHA, `-j 1`, `--test-threads=1`, `--locked`, `--version`, and `doctor`. Reject `-latest`, `write`, `cache`, `self-hosted`, `sudo`, background operators, floating `uses:` refs, and any other action.
-
-- [ ] **Step 2: Confirm RED**
-
-Run: `cargo test --test workflow_contract ci_ -j 1 -- --test-threads=1`
-
-- [ ] **Step 3: Add the exact CI workflow**
-
-Set the workflow display name to `CI`. Use one job named `validate`, `concurrency.group: ci-${{ github.workflow }}-${{ github.ref }}`, `cancel-in-progress: true`, and these commands in order:
-
-```bash
-rustc --version && cargo --version && uname -m && sw_vers -productVersion
-cargo fmt --all -- --check
-cargo clippy --all-targets -j 1 -- -D warnings
-cargo test -j 1 -- --test-threads=1
-cargo build --release --locked -j 1
-test "$(target/release/agent-lowmem --version)" = "agent-lowmem 0.1.0"
-target/release/agent-lowmem doctor
-```
-
-- [ ] **Step 4: Verify and commit**
-
-Run the focused test, full tests, and `git diff --check`. Commit `ci: validate Apple Silicon builds` and push `main`. Observe the first `CI / validate` run to completion before Task 7.
-
-### Task 5: Deterministic release packaging boundary
+### Task 5: Deterministic ARM64 release packaging
 
 **Files:**
 - Create: `scripts/package-release.sh`
@@ -259,247 +62,220 @@ Run the focused test, full tests, and `git diff --check`. Commit `ci: validate A
 - Modify: `.gitignore`
 
 **Interfaces:**
-- Consumes: positional arguments `$1` version, `$2` binary path, and `$3` output directory in `scripts/package-release.sh`.
-- Produces: one exact archive and `SHA256SUMS`; output lives below ignored `/dist/`.
+- Consumes exactly three positional arguments: version, executable binary path, and output directory.
+- Produces `agent-lowmem-v{version}-aarch64-apple-darwin.tar.gz` and `SHA256SUMS` below the output directory.
 
-- [ ] **Step 1: Add failing package tests**
+- [ ] **Step 1: Write the failing package integration tests**
 
-Create a temporary executable and invoke the script. Assert invalid versions and missing/non-executable binaries fail. For `0.1.0`, assert exact filenames, archive members `agent-lowmem`, `LICENSE.md`, `README.md`, modes `0755/0644/0644`, no `._` members, one checksum line matching `^[0-9a-f]{64}  agent-lowmem-v0.1.0-aarch64-apple-darwin.tar.gz\n$`, and successful `shasum -a 256 -c`.
+Create a real temporary executable and invoke `sh scripts/package-release.sh`. Assert invalid versions, missing binaries, non-regular binaries, non-executable binaries, extra arguments, and an output directory equal to the repository root fail without changing repository files. For version `0.1.0`, assert exact output names, exact archive members `agent-lowmem`, `LICENSE.md`, `README.md`, modes `0755/0644/0644`, no `._` members, and exactly:
+
+```text
+{64 lowercase hex characters}  agent-lowmem-v0.1.0-aarch64-apple-darwin.tar.gz
+```
+
+Then run `shasum -a 256 -c SHA256SUMS` inside the output directory and require success.
 
 - [ ] **Step 2: Confirm RED**
 
-Run: `cargo test --test release_package -j 1 -- --test-threads=1`
+Run `cargo test --test release_package -j 1 -- --test-threads=1`. Expected: the script is missing.
 
 - [ ] **Step 3: Implement the packaging script**
 
-Use `#!/bin/sh`, `set -eu`, an exact SemVer shell case, `mktemp -d`, a cleanup trap, `install -m`, and:
+Use `#!/bin/sh`, `set -eu`, exactly three arguments, an ASCII numeric `MAJOR.MINOR.PATCH` grammar with no leading zeros except `0`, `mktemp -d`, and a cleanup trap. Resolve the repository from the script location, reject the repository root as output, create the output directory, remove only the exact archive and `SHA256SUMS`, and stage with:
 
 ```sh
-archive="agent-lowmem-v${version}-aarch64-apple-darwin.tar.gz"
+install -m 0755 "$binary" "$stage/agent-lowmem"
+install -m 0644 "$repository/LICENSE.md" "$stage/LICENSE.md"
+install -m 0644 "$repository/README.md" "$stage/README.md"
 COPYFILE_DISABLE=1 tar -C "$stage" -czf "$output/$archive" agent-lowmem LICENSE.md README.md
 (cd "$output" && shasum -a 256 "$archive" > SHA256SUMS)
 (cd "$output" && shasum -a 256 -c SHA256SUMS)
 ```
 
-Reject output paths equal to the repository root and remove/recreate only the two exact output identities. Add `/dist/` to `.gitignore`.
+Add `/dist/` to `.gitignore`.
 
-- [ ] **Step 4: Verify and commit**
+- [ ] **Step 4: Verify, commit, and push**
 
-Run the focused test, ShellCheck if installed, full sequential tests, and a real release build/package smoke test. Commit `build: package the Apple Silicon release` and push.
+Run the focused test, `shellcheck scripts/package-release.sh` when ShellCheck is installed, the full sequential test suite, `cargo build --release --locked -j 1`, a real package rehearsal into `dist`, archive/mode inspection, checksum verification, and `git diff --check`. Commit `build: package the Apple Silicon release` and push `main`.
 
-### Task 6: Security-pinned draft release workflow
+### Task 6: Complete local release checker
 
 **Files:**
-- Create: `.github/workflows/release.yml`
-- Modify: `tests/workflow_contract.rs`
+- Create: `scripts/check-release.sh`
+- Create: `tests/release_check.rs`
+- Modify: `.gitignore`
 
 **Interfaces:**
-- Consumes: annotated `vX.Y.Z` tag, Cargo version, packaging script, and exact release gates.
-- Produces: a draft GitHub Release with archive, checksum manifest, and GitHub attestations.
+- Consumes exactly four arguments: version, cargo-audit executable, output directory, and evidence-file path.
+- Produces a verified package through `scripts/package-release.sh` and a mode-`0600` redacted evidence file outside the repository.
 
-- [ ] **Step 1: Extend failing workflow tests**
+- [ ] **Step 1: Write strict preflight tests**
 
-Assert tag-only trigger, `macos-14`, timeout 30, non-cancelling release concurrency, exact three write permissions, pinned checkout/attest SHAs, strict tag/Cargo/main checks, all retained release gates, ARM64 checks, packaging script use, local checksum verification, `gh release create --draft --verify-tag`, exact asset upload, and no automatic publication. Reject third-party actions, cache, PAT names, `workflow_dispatch`, `--draft=false`, and tap mutation.
+Assert missing/extra arguments, invalid version, missing/non-executable audit tool, evidence inside the repository, output equal to repository root, non-ARM64 host, dirty worktree, and local/remote `main` divergence all fail before Cargo or the audit executable starts. Use isolated Git fixtures and sentinel executables; assert errors contain no absolute fixture path or environment value.
 
 - [ ] **Step 2: Confirm RED**
 
-Run: `cargo test --test workflow_contract release_ -j 1 -- --test-threads=1`
+Run `cargo test --test release_check -j 1 -- --test-threads=1`. Expected: the checker is missing.
 
-- [ ] **Step 3: Implement validation and build steps**
+- [ ] **Step 3: Implement fail-closed preflight and sequential gates**
 
-Use `fetch-depth: 0`; validate the tag with shell `case`; obtain Cargo version with `cargo metadata --locked --no-deps --format-version 1`; verify `git merge-base --is-ancestor "$GITHUB_SHA" origin/main`; reject an existing release with `gh release view "$GITHUB_REF_NAME"`.
+Use POSIX shell with `set -eu`, resolve the repository from the script location, require `uname -m = arm64`, clean `git status --porcelain=v1 --untracked-files=all`, `HEAD = refs/remotes/origin/main`, package version equality from `cargo metadata --locked --no-deps --format-version 1`, and an external evidence path. Run exactly:
 
-Download `cargo-audit-aarch64-apple-darwin-v0.22.2.tgz` from the exact `cargo-audit/v0.22.2` RustSec release, require SHA-256 `ec7ca4263769593df4d909be85b94a6b79efa2897be5d2bb8ebd516e823175af`, extract below `$RUNNER_TEMP`, and run `cargo-audit audit --deny warnings --file Cargo.lock`.
-
-Run all active tests plus the five ignored release gates explicitly. Build locked, assert `uname -m` and `file target/release/agent-lowmem` report ARM64, assert size, and invoke `scripts/package-release.sh`.
-
-- [ ] **Step 4: Implement attestation and draft creation**
-
-Attest `dist/agent-lowmem-v${version}-aarch64-apple-darwin.tar.gz` and `dist/SHA256SUMS` with the pinned attestation action. Create the draft only after attestations succeed:
-
-```bash
-gh release create "$GITHUB_REF_NAME" --draft --verify-tag --generate-notes \
-  --title "Agent Lowmem $GITHUB_REF_NAME" \
-  "dist/$archive" "dist/SHA256SUMS"
+```sh
+cargo fmt --all -- --check
+cargo clippy --all-targets -j 1 -- -D warnings
+cargo test -j 1 -- --test-threads=1
+cargo test --release --test doctor_budget -- --ignored --test-threads=1
+cargo test --release --test managed_files_budget -- --ignored --test-threads=1
+cargo test --release --test run_budget -- --ignored --test-threads=1
+cargo metadata --locked --format-version 1
+"$cargo_audit" audit --deny warnings --file Cargo.lock
+cargo build --release --locked -j 1
 ```
 
-- [ ] **Step 5: Verify and commit**
+Apply the reviewed SPDX allowlist from `docs/dependencies-v1.md` to external packages only. Require `file target/release/agent-lowmem` to contain `arm64`, size at most `12582912`, exact version output, successful `doctor`, successful packaging, exact archive inventory, and checksum verification.
 
-Run workflow policy tests, all tests, format, Clippy, `git diff --check`, and a local package rehearsal. Commit `ci: prepare verified draft releases` and push. Do not create a tag.
+- [ ] **Step 4: Write evidence atomically**
 
-### Task 7: Pre-publication audit and release-candidate evidence
+Create a same-directory temporary file under `umask 077`, record only UTC time, HEAD, tool versions, package count, audit status, active/ignored gate status, binary/archive byte counts, archive identities, and overall status, then rename to the caller's external evidence path. Never record environment contents, usernames, absolute paths, tokens, Git remotes, source bytes, or tool stderr.
+
+- [ ] **Step 5: Verify, commit, and push**
+
+Download the official `cargo-audit-aarch64-apple-darwin-v0.22.2.tgz` into `mktemp -d`, require SHA-256 `ec7ca4263769593df4d909be85b94a6b79efa2897be5d2bb8ebd516e823175af`, extract it, and run the checker after its commit against clean synchronized `main`. Run ShellCheck when available, focused/full tests, and `git diff --check`. Commit `build: add local release verification` and push before the real clean run.
+
+### Task 7: Publication audit and release-candidate evidence
 
 **Files:**
 - Create: `scripts/audit-publication.sh`
 - Create: `tests/publication_audit.rs`
 - Modify: `docs/dependencies-v1.md`
 - Modify: `README.md`
-- Modify: `docs/superpowers/specs/2026-09-03-agent-lowmem-phase-5-release-distribution-design.md`
+- Modify: the Phase 5 spec status
 
 **Interfaces:**
-- Consumes: clean synchronized `main`, a caller-supplied Gitleaks executable, and the complete reachable Git ref set.
-- Produces: redacted pass/fail evidence and the exact release-candidate commit; never prints candidate secret values.
+- Consumes exactly two arguments: Gitleaks executable and external evidence-file path.
+- Produces a mode-`0600`, redacted audit record for the complete reachable ref set.
 
-- [ ] **Step 1: Add failing audit-policy tests**
+- [ ] **Step 1: Write failing publication-audit tests**
 
-Assert the script refuses dirty worktrees, local/remote divergence, missing scanner, shallow repositories, submodules, LFS pointers, suspicious tracked filenames, and failed `git fsck`. Assert it invokes the scanner with redaction and all reachable history, records counts/status only, and never writes inside `.git` or tracked paths.
+Use isolated Git repositories to assert refusal of missing/extra arguments, missing/non-executable scanner, evidence inside the repository, dirty worktree, local/remote divergence, shallow repositories, submodules, Git LFS pointers, suspicious tracked filenames, corrupt Git objects, and a scanner finding. Assert the real scanner command uses Git mode with redaction and all refs; assert evidence contains counts/status only and no candidate values or absolute paths.
 
-- [ ] **Step 2: Confirm RED and implement the script**
+- [ ] **Step 2: Confirm RED and implement**
 
-Run the focused test, then implement a POSIX script taking exactly `$1` as the Gitleaks executable path and `$2` as the evidence-file path. Resolve and compare HEAD/origin main, use `git status --porcelain=v1 --untracked-files=all`, `git fsck --full`, `git rev-list --all`, `git ls-files`, and Gitleaks redacted Git mode. Write the evidence atomically with mode `0600` outside the repository.
+Run `cargo test --test publication_audit -j 1 -- --test-threads=1`, then implement POSIX `set -eu` checks using `git status --porcelain=v1 --untracked-files=all`, `git fsck --full`, `git rev-list --all`, `git ls-files`, `.gitmodules`, LFS pointer signatures, and a closed suspicious-filename grammar. Invoke Gitleaks with `git --redact --no-banner --exit-code 1 --log-opts=--all`. Write external evidence atomically with mode `0600` and status/counts only.
 
-- [ ] **Step 3: Run the real secret and publication audit**
+- [ ] **Step 3: Run the real all-ref scan**
 
-Download Gitleaks `v8.30.1` ARM64 and its official checksum list to `mktemp -d`, verify archive SHA-256 `b40ab0ae55c505963e365f271a8d3846efbc170aa17f2607f13df610a9aeb6a5`, extract, and run the audit script against all refs. Move the temporary tool directory to Trash afterward. Stop immediately on any finding and report only its category/location, never its value.
+Download Gitleaks `v8.30.1` ARM64 and its checksum list to `mktemp -d`, require archive SHA-256 `b40ab0ae55c505963e365f271a8d3846efbc170aa17f2607f13df610a9aeb6a5`, extract it, and run the audit against all refs. Stop on any finding and report only category/location, never the candidate. Move the temporary tool directory to Trash after use.
 
-- [ ] **Step 4: Run complete local release gates**
+- [ ] **Step 4: Run and record complete release gates**
 
-Run format, Clippy, all active tests, every ignored release test, schemas, locked metadata/license audit, RustSec audit, release build, version/doctor smoke, package test, archive inspection, checksum verification, size/RSS gates, and source/workflow policy guards sequentially.
+Run the Task 6 checker with the checksum-verified cargo-audit binary, re-run the publication audit, and append exact non-secret evidence to `docs/dependencies-v1.md`: host/tool versions, audited commit, test totals, scan status, external dependency/license totals, advisories, binary/archive bytes, resource results, artifact inventory, and exact commands. Update README to release-candidate language without Homebrew availability and set the spec status to `Implemented locally; publication gates pending`.
 
-- [ ] **Step 5: Record evidence and commit**
+- [ ] **Step 5: Commit, push, and audit the final candidate**
 
-Append exact host/tool versions, audited commit, test totals, scan status, dependencies, advisories, binary/archive bytes, resource results, action SHAs, artifact inventory, and gate commands to `docs/dependencies-v1.md`. Change the spec status to `Implemented locally; publication gates pending`. Update README from early development to release candidate without claiming Homebrew or a public release.
-
-Commit `docs: record phase 5 release candidate evidence`, push, rerun the audit against that new commit, and append a follow-up evidence commit only if the commit identity itself must be recorded. Confirm clean synchronized `main` and green CI before Task 8.
+Commit `docs: record phase 5 release candidate evidence`, push `main`, then rerun both audits against that exact clean synchronized commit. If the recorded commit must change, add one evidence-only follow-up commit and audit it again. Proceed only when the final HEAD itself is the audited commit.
 
 ### Task 8: Public repository settings and canonical labels
 
 **Files:**
-- Modify: `docs/dependencies-v1.md` only after remote verification.
+- Modify: `docs/dependencies-v1.md` after remote verification.
 
 **Interfaces:**
-- Consumes: the exact audited clean release-candidate commit from Task 7.
-- Produces: public `Pleo2/agent-lowmem`, private vulnerability reporting, immutable releases, and canonical labels; no release tag.
+- Consumes the exact clean release-candidate commit from Task 7.
+- Produces public `Pleo2/agent-lowmem`, disabled Actions, private vulnerability reporting, immutable releases, and canonical labels; no tag.
 
 - [ ] **Step 1: Revalidate the irreversible boundary**
 
-Fetch `origin/main`; require local HEAD equality, a completely clean worktree, green `CI / validate` on that HEAD, the second redacted all-ref secret scan, successful `git fsck --full`, and the exact publication inventory recorded in Task 7. Re-read repository metadata and confirm it is still private. Any difference blocks the visibility change.
+Fetch `origin/main`; require HEAD equality, a completely clean worktree, fresh successful local release and all-ref publication audits, successful `git fsck --full`, zero workflow files, and the exact publication inventory recorded in Task 7. Verify authenticated metadata still reports `PRIVATE`.
 
-- [ ] **Step 2: Make the exact repository public**
+- [ ] **Step 2: Make the exact repository public and verify anonymously**
 
-After replacing the invalid Step 1 during plan review with the full Task 7 gate rerun, execute:
+Run:
 
-```bash
+```sh
 gh repo edit Pleo2/agent-lowmem --visibility public --accept-visibility-change-consequences
 ```
 
-Immediately verify unauthenticated repository metadata from a request without GitHub credentials. Do not infer public visibility only from the authenticated CLI.
+Then query `https://api.github.com/repos/Pleo2/agent-lowmem` without an authorization header and require `visibility=public` and `private=false`.
 
-- [ ] **Step 3: Enable security and release settings**
+- [ ] **Step 3: Disable Actions and enable security/release settings**
 
-Enable private vulnerability reporting through the GitHub repository security setting. Enable release immutability under Settings > General > Releases before any tag. Re-read both settings independently; a missing setting blocks Task 9.
+Disable repository Actions through the GitHub API and verify `enabled=false`. Enable private vulnerability reporting and release immutability through their supported GitHub settings, then re-read both independently. A missing or unavailable setting blocks tagging.
 
-- [ ] **Step 4: Apply labels idempotently**
+- [ ] **Step 4: Apply labels without deleting unrelated labels**
 
-For each exact entry in `.github/labels.yml`, use `gh label create --force --repo Pleo2/agent-lowmem --name ... --color ... --description ...`. Verify the ten canonical labels and preserve unrelated labels.
+For each exact entry in `.github/labels.yml`, run `gh label create --force --repo Pleo2/agent-lowmem` with its name, six-digit color, and description. Verify all ten canonical labels and preserve every unrelated label.
 
-- [ ] **Step 5: Record the external state**
+- [ ] **Step 5: Record external state**
 
-Append visibility, vulnerability-reporting, immutability, Actions permissions, label inventory, CI run URL, and verification time to `docs/dependencies-v1.md`. Commit `docs: record public repository readiness`, push, and rerun CI. Do not tag.
+Append visibility, anonymous verification, Actions-disabled state, vulnerability-reporting state, immutability state, label inventory, and verification time to `docs/dependencies-v1.md`. Commit `docs: record public repository readiness`, push, rerun local release/publication audits, and do not tag.
 
-### Task 9: Create and verify the v0.1.0 draft release
+### Task 9: Create, verify, and publish v0.1.0 locally
 
 **Files:**
 - Modify: `docs/dependencies-v1.md` after observed remote results.
 
 **Interfaces:**
-- Consumes: public synchronized `main`, enabled immutable releases, green CI, Cargo 0.1.0, and release workflow.
-- Produces: annotated `v0.1.0`, a successful release workflow, and one verified draft release.
+- Consumes public synchronized `main`, successful local audits, Cargo 0.1.0, and enabled immutable releases.
+- Produces annotated `v0.1.0` and one manually verified immutable GitHub Release.
 
 - [ ] **Step 1: Prove tag preconditions**
 
-Verify no local/remote `v0.1.0` tag, no release of that name, clean synchronized main, exact Cargo version, public visibility, private vulnerability reporting, release immutability, and green CI on HEAD.
+Require no local or remote `v0.1.0` tag, no release with that name, clean synchronized `main`, exact Cargo version, public visibility, disabled Actions, private vulnerability reporting, release immutability, and fresh successful Task 6/7 evidence.
 
 - [ ] **Step 2: Create and push the annotated tag**
 
-```bash
+Run:
+
+```sh
 git tag -a v0.1.0 -m "release: v0.1.0"
 git show --no-patch --format=fuller v0.1.0
 git push origin v0.1.0
 ```
 
-- [ ] **Step 3: Wait for the release workflow**
+Verify the remote tag resolves to the exact audited commit and do not move or reuse it.
 
-Resolve the exact run triggered by the tag, use `gh run watch --exit-status`, and inspect every job conclusion. On failure, do not move/reuse the tag and do not publish partial assets; diagnose whether the unpublished draft can be deleted and release a patch version if the immutable tag boundary requires it.
+- [ ] **Step 3: Create the draft explicitly**
 
-- [ ] **Step 4: Verify the draft independently**
+Run `gh release create v0.1.0 --draft --verify-tag --generate-notes --title "Agent Lowmem v0.1.0" dist/agent-lowmem-v0.1.0-aarch64-apple-darwin.tar.gz dist/SHA256SUMS`. Do not pass `--latest` or publish automatically.
 
-Download both assets to a new temporary directory, compare the archive checksum, inspect exact members/modes, execute extracted `--version` and `doctor`, and run:
+- [ ] **Step 4: Verify downloaded draft assets independently**
 
-```bash
-gh attestation verify agent-lowmem-v0.1.0-aarch64-apple-darwin.tar.gz --repo Pleo2/agent-lowmem
-gh attestation verify SHA256SUMS --repo Pleo2/agent-lowmem
-```
+Download both assets to a new temporary directory, verify the checksum, exact members and modes, execute extracted `--version` and `doctor`, compare the tag target and local audited commit, and confirm the release is still a draft. Move temporary downloads to Trash.
 
-Confirm the release is still draft and move temporary downloads to Trash.
+- [ ] **Step 5: Publish and record the immutable release**
 
-- [ ] **Step 5: Publish the immutable release**
+Review generated notes and add the unsigned/not-notarized disclosure if absent. Publish with `gh release edit v0.1.0 --draft=false --latest`, then verify public URLs, immutable setting, exact tag target, asset names, sizes, and checksum from a fresh anonymous download. Append evidence and commit `docs: record v0.1.0 publication`.
 
-Review generated notes and unsigned/not-notarized disclosure, then publish with `gh release edit v0.1.0 --draft=false --latest`. Verify public asset URLs, immutability, tag target, checksum, and attestation again. Append evidence and commit `docs: record v0.1.0 publication`.
-
-### Task 10: Homebrew tap, post-release documentation, and branch policy
+### Task 10: Homebrew tap, public docs, and no-CI branch policy
 
 **Files:**
-- Create in separate repository: `Pleo2/homebrew-agent-lowmem/Formula/agent-lowmem.rb`
-- Create in separate repository: `Pleo2/homebrew-agent-lowmem/README.md`
-- Create in separate repository: `Pleo2/homebrew-agent-lowmem/LICENSE`
-- Modify: `README.md`
-- Modify: `CHANGELOG.md`
-- Modify: `tests/community_contract.rs`
-- Modify: `docs/dependencies-v1.md`
-- Modify: `docs/superpowers/specs/2026-09-03-agent-lowmem-phase-5-release-distribution-design.md`
-- Modify: this plan's completed checkboxes
+- Create in a fresh repository: `Pleo2/homebrew-agent-lowmem/Formula/agent-lowmem.rb`
+- Create in that repository: `README.md`
+- Create in that repository: `LICENSE`
+- Modify here: `README.md`, `CHANGELOG.md`, `tests/community_contract.rs`, `docs/dependencies-v1.md`, Phase 5 spec status, and this plan's checkboxes.
 
 **Interfaces:**
-- Consumes: immutable public release URL and independently verified archive SHA-256.
-- Produces: public tap `Pleo2/homebrew-agent-lowmem`, one-command install, verified uninstall, public docs, and protected post-release `main` workflow.
+- Consumes the immutable public v0.1.0 archive URL and independently verified SHA-256.
+- Produces public tap `Pleo2/homebrew-agent-lowmem`, verified install/uninstall, final public docs, and protection against force-push/deletion without CI requirements.
 
-- [ ] **Step 1: Create the public tap without inherited secrets**
+- [ ] **Step 1: Create the tap without inherited repository state**
 
-Use a fresh `mktemp -d`, initialize only the three specified files, create `Pleo2/homebrew-agent-lowmem` as a public repository, and push one `chore: initialize Agent Lowmem tap` commit. The tap LICENSE is MIT for packaging metadata; the formula declares upstream `FSL-1.1-MIT`.
+Use a fresh `mktemp -d`; create only `Formula/agent-lowmem.rb`, `README.md`, and MIT `LICENSE`; initialize Git; and create public `Pleo2/homebrew-agent-lowmem`. The first commit is `chore: initialize Agent Lowmem tap`. The formula declares upstream `FSL-1.1-MIT` and contains the exact public versioned archive URL and freshly recomputed digest.
 
-- [ ] **Step 2: Add the formula from verified runtime evidence**
+- [ ] **Step 2: Validate the Homebrew lifecycle**
 
-Set the formula URL to `https://github.com/Pleo2/agent-lowmem/releases/download/v0.1.0/agent-lowmem-v0.1.0-aarch64-apple-darwin.tar.gz`. Set `sha256` to the digest independently recomputed from that public URL. Use:
+Run `brew style`, `brew audit --strict`, direct install, `brew test`, `agent-lowmem --version`, `agent-lowmem doctor`, and uninstall. Require no daemon, service, residual binary, or tap-owned runtime process. Commit `feat: distribute agent-lowmem 0.1.0` and push the tap only after all checks pass.
 
-```ruby
-class AgentLowmem < Formula
-  desc "Native macOS resource guardrails for low-memory agentic development"
-  homepage "https://agentlowmem.dev"
-  url "https://github.com/Pleo2/agent-lowmem/releases/download/v0.1.0/agent-lowmem-v0.1.0-aarch64-apple-darwin.tar.gz"
-  version "0.1.0"
-  license "FSL-1.1-MIT"
+- [ ] **Step 3: Publish Homebrew instructions and finalize documents**
 
-  depends_on :macos
-  depends_on arch: :arm64
+Only after Step 2, add `brew install Pleo2/agent-lowmem/agent-lowmem`, upgrade, and uninstall commands to README with the unsigned/not-notarized warning adjacent. Change the community contract from rejecting to requiring the exact install command. Finalize changelog/recognition, mark the spec `Released`, and mark plan checkboxes only from observed evidence.
 
-  def install
-    bin.install "agent-lowmem"
-    prefix.install "LICENSE.md", "README.md"
-  end
+- [ ] **Step 4: Establish the no-CI branch policy**
 
-  test do
-    assert_equal "agent-lowmem #{version}\n", shell_output("#{bin}/agent-lowmem --version")
-  end
-end
-```
+Create a GitHub ruleset for `main` that blocks branch deletion and non-fast-forward pushes. Do not require a status check, Actions workflow, external pipeline, or second approving reviewer. Verify the active ruleset through the API before relying on it.
 
-The snippet deliberately omits `sha256` because its literal value cannot exist before Task 9. At execution, compute it with `shasum -a 256` from a fresh public download, require equality with the published `SHA256SUMS`, and use `apply_patch` to insert a `sha256` statement immediately after `version`. Its quoted literal must be the observed 64-character lowercase digest before the formula is staged or tested.
+- [ ] **Step 5: Final convergence**
 
-- [ ] **Step 3: Validate a clean Homebrew lifecycle**
-
-Run `brew style`, `brew audit --strict`, direct install, `brew test`, `agent-lowmem --version`, `agent-lowmem doctor`, and uninstall. Confirm no daemon, service, or residual Agent Lowmem binary remains. Commit `feat: distribute agent-lowmem 0.1.0` in the tap and push.
-
-- [ ] **Step 4: Publish Homebrew instructions and recognition**
-
-Only after Step 3, add `brew install Pleo2/agent-lowmem/agent-lowmem`, upgrade, and uninstall instructions to the implementation README. Keep the unsigned/not-notarized warning adjacent. Update `tests/community_contract.rs` so it now requires, rather than rejects, the exact verified Homebrew command. Finalize changelog and recognition; mark the spec `Released` and the plan checkboxes from observed evidence only.
-
-- [ ] **Step 5: Establish post-release branch policy**
-
-Create a GitHub ruleset for `main` requiring the observed `CI / validate` status, blocking force pushes and deletion, and allowing merges without a mandatory second approval while `@Pleo2` is the sole maintainer. Verify the ruleset through the API before relying on it.
-
-- [ ] **Step 6: Final convergence and commit**
-
-Run all local and release-only tests sequentially, verify public repository/release/tap URLs without credentials, verify install from the public tap once more, confirm exact tags and immutable assets, run `git diff --check`, and append final evidence.
-
-Commit `docs: complete the v0.1.0 release`, push, wait for CI, and prove clean synchronized `main`. Do not begin signing, Intel, auto-update, tap automation, or GitHub Offload work.
+Run all active and ignored release-only tests sequentially, both local audit scripts, anonymous implementation/release/tap URL checks, a fresh install from the public tap, exact version and doctor smoke checks, uninstall, tag/asset/checksum verification, and `git diff --check`. Append final evidence, commit `docs: complete the v0.1.0 release`, push, and prove clean synchronized `main`. Do not begin signing, Intel support, auto-update, tap automation, GitHub Actions, or GitHub Offload.
